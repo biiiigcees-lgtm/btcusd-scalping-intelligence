@@ -1,5 +1,6 @@
 import { Redis } from "ioredis";
 import { REDIS_STREAMS } from "@btc/shared";
+import { fetchLiveMarket } from "@/lib/market-engine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,36 +32,73 @@ export async function GET() {
         timestamp: new Date().toISOString(),
       });
 
+      // Prefer Redis worker stream when available
       try {
         redis = new Redis(REDIS_URL, {
           maxRetriesPerRequest: 1,
           lazyConnect: true,
-          connectTimeout: 3000,
+          connectTimeout: 2500,
         });
         await redis.connect();
+        await redis.ping();
       } catch {
+        redis?.disconnect();
+        redis = null;
+      }
+
+      if (!redis) {
         send("status", {
           redis: "unavailable",
-          systemHealth: "degraded",
-          note: "UI will show static NO TRADE until Redis is reachable",
+          mode: "direct-binance",
+          systemHealth: "healthy",
+          note: "Live public Binance feed active (worker/Redis optional)",
         });
+
+        const pushLive = async () => {
+          if (closed) return;
+          try {
+            const snap = await fetchLiveMarket();
+            send("market_state", snap);
+          } catch (err) {
+            send("status", {
+              redis: "unavailable",
+              mode: "direct-binance",
+              error: (err as Error).message,
+            });
+          }
+        };
+
+        await pushLive();
+        const iv = setInterval(pushLive, 4000);
         const hb = setInterval(() => {
           if (closed) {
+            clearInterval(iv);
             clearInterval(hb);
             return;
           }
           send("heartbeat", { ts: new Date().toISOString() });
-        }, 5000);
+        }, 15000);
         return;
       }
+
+      send("status", {
+        redis: "connected",
+        mode: "worker-stream",
+        note: "Reading market_state from Redis worker",
+      });
 
       let lastId = "$";
       const poll = async () => {
         if (closed || !redis) return;
         try {
           const results = await redis.xread(
-            "COUNT", 10, "BLOCK", 2000,
-            "STREAMS", REDIS_STREAMS.marketState, lastId
+            "COUNT",
+            10,
+            "BLOCK",
+            2000,
+            "STREAMS",
+            REDIS_STREAMS.marketState,
+            lastId
           );
           if (results) {
             for (const [, messages] of results) {
@@ -70,7 +108,9 @@ export async function GET() {
                 if (payloadIdx >= 0 && fields[payloadIdx + 1]) {
                   try {
                     send("market_state", JSON.parse(fields[payloadIdx + 1]));
-                  } catch { /* ignore */ }
+                  } catch {
+                    /* ignore */
+                  }
                 }
               }
             }
