@@ -1,0 +1,11 @@
+{
+  "name": "@btc/config",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "echo 'config ok' && exit 0",
+    "lint": "echo 'config ok' && exit 0",
+    "typecheck": "echo 'config ok' && exit 0",
+    "build": "echo 'config ok' && exit 0"
+  }
+}
