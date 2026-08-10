@@ -58,10 +58,6 @@ const SYMBOL = "BTCUSDT";
 const DATA_QUALITY_THRESHOLD = 0.85;
 const MODEL_VERSION = "0.0.0-baseline";
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
 function calcFeatures(closes: number[], volumes: number[]) {
   if (closes.length < 3) {
     return {
@@ -133,18 +129,27 @@ function detectRegime(
 }
 
 /** Baseline never emits direction until research promotes a model. */
-function inferBaseline(dataQuality: number, features: ReturnType<typeof calcFeatures>) {
+function inferBaseline(
+  dataQuality: number,
+  features: ReturnType<typeof calcFeatures>
+) {
+  const volPct = (features.realized_vol * 100).toFixed(3);
+  const momPct = (features.momentum_5 * 100).toFixed(3);
   const why = [
     "Baseline model is locked at NO TRADE until research promotion",
-    `Realized vol (1m window): ${(features.realized_vol * 100).toFixed(3)}%",
-    `5-bar momentum: ${(features.momentum_5 * 100).toFixed(3)}%",
+    "Realized vol (1m window): " + volPct + "%",
+    "5-bar momentum: " + momPct + "%",
   ];
   const supporting: string[] = [];
   const contradictory: string[] = [];
 
   if (dataQuality < DATA_QUALITY_THRESHOLD) {
     contradictory.push(
-      `Data quality ${(dataQuality * 100).toFixed(0)}% below ${(DATA_QUALITY_THRESHOLD * 100).toFixed(0)}% threshold`
+      "Data quality " +
+        (dataQuality * 100).toFixed(0) +
+        "% below " +
+        (DATA_QUALITY_THRESHOLD * 100).toFixed(0) +
+        "% threshold"
     );
   } else {
     supporting.push("Public feed healthy and within quality band");
@@ -176,19 +181,24 @@ function inferBaseline(dataQuality: number, features: ReturnType<typeof calcFeat
 
 export async function fetchLiveMarket(): Promise<MarketSnapshot> {
   const [tickerRes, klinesRes] = await Promise.all([
-    fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${SYMBOL}`, {
+    fetch("https://api.binance.com/api/v3/ticker/24hr?symbol=" + SYMBOL, {
       next: { revalidate: 0 },
       cache: "no-store",
     }),
     fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=1m&limit=60`,
+      "https://api.binance.com/api/v3/klines?symbol=" +
+        SYMBOL +
+        "&interval=1m&limit=60",
       { next: { revalidate: 0 }, cache: "no-store" }
     ),
   ]);
 
   if (!tickerRes.ok || !klinesRes.ok) {
     throw new Error(
-      `Binance public API error ticker=${tickerRes.status} klines=${klinesRes.status}`
+      "Binance public API error ticker=" +
+        tickerRes.status +
+        " klines=" +
+        klinesRes.status
     );
   }
 
@@ -217,7 +227,6 @@ export async function fetchLiveMarket(): Promise<MarketSnapshot> {
   const features = calcFeatures(closes, volumes);
   const now = new Date().toISOString();
 
-  // Public REST path is high quality when responses are complete
   const dataQuality = closes.length >= 30 ? 0.92 : closes.length >= 10 ? 0.8 : 0.55;
   const regime = detectRegime(features.realized_vol, features.momentum_5, now);
   const signal = inferBaseline(dataQuality, features);
@@ -229,7 +238,6 @@ export async function fetchLiveMarket(): Promise<MarketSnapshot> {
         ? "degraded"
         : "critical";
 
-  // Downsample sparkline for UI
   const sparkline =
     closes.length > 40
       ? closes.filter((_, i) => i % 2 === 0).slice(-30)
