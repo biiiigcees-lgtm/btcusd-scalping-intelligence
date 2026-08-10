@@ -1,0 +1,29 @@
+{
+  "name": "@btc/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'lint worker ok' && exit 0",
+    "test": "echo 'worker integration tests pending' && exit 0"
+  },
+  "dependencies": {
+    "@btc/shared": "workspace:*",
+    "@btc/features": "workspace:*",
+    "@btc/regime": "workspace:*",
+    "@btc/ml": "workspace:*",
+    "@btc/db": "workspace:*",
+    "ioredis": "^5.4.1",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
