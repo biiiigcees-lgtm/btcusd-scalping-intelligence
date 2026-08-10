@@ -1,7 +1,8 @@
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+html,
 body {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 14px;
-  line-height: 1.5;
+  margin: 0;
+  padding: 0;
+  background: #09090b;
+  color: #fafafa;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
