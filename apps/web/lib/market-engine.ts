@@ -1,7 +1,6 @@
 /**
- * Server-side market intelligence using public Binance data only.
- * Mirrors worker packages (features / regime / baseline ML) so the Vercel
- * deployment is production-useful without Redis or a long-running worker.
+ * Server-side market intelligence using public exchange data only.
+ * Multi-source fallback because api.binance.com often returns 451 from cloud IPs.
  */
 
 export type Regime =
@@ -51,12 +50,17 @@ export interface MarketSnapshot {
     };
   };
   sparkline: number[];
-  source: "binance-public";
+  source: string;
 }
 
 const SYMBOL = "BTCUSDT";
 const DATA_QUALITY_THRESHOLD = 0.85;
 const MODEL_VERSION = "0.0.0-baseline";
+
+const fetchOpts: RequestInit = {
+  cache: "no-store",
+  headers: { Accept: "application/json" },
+};
 
 function calcFeatures(closes: number[], volumes: number[]) {
   if (closes.length < 3) {
@@ -128,7 +132,6 @@ function detectRegime(
   return { timestamp, regime, confidence, evidence };
 }
 
-/** Baseline never emits direction until research promotes a model. */
 function inferBaseline(
   dataQuality: number,
   features: ReturnType<typeof calcFeatures>
@@ -179,26 +182,27 @@ function inferBaseline(
   };
 }
 
-export async function fetchLiveMarket(): Promise<MarketSnapshot> {
+type RawMarket = {
+  price: number;
+  change24h: number;
+  high24h: number;
+  low24h: number;
+  volume24h: number;
+  quoteVolume24h: number;
+  closes: number[];
+  volumes: number[];
+  source: string;
+};
+
+async function fromBinanceHost(host: string, label: string): Promise<RawMarket> {
   const [tickerRes, klinesRes] = await Promise.all([
-    fetch("https://api.binance.com/api/v3/ticker/24hr?symbol=" + SYMBOL, {
-      next: { revalidate: 0 },
-      cache: "no-store",
-    }),
-    fetch(
-      "https://api.binance.com/api/v3/klines?symbol=" +
-        SYMBOL +
-        "&interval=1m&limit=60",
-      { next: { revalidate: 0 }, cache: "no-store" }
-    ),
+    fetch(host + "/api/v3/ticker/24hr?symbol=" + SYMBOL, fetchOpts),
+    fetch(host + "/api/v3/klines?symbol=" + SYMBOL + "&interval=1m&limit=60", fetchOpts),
   ]);
 
   if (!tickerRes.ok || !klinesRes.ok) {
     throw new Error(
-      "Binance public API error ticker=" +
-        tickerRes.status +
-        " klines=" +
-        klinesRes.status
+      label + " ticker=" + tickerRes.status + " klines=" + klinesRes.status
     );
   }
 
@@ -210,24 +214,110 @@ export async function fetchLiveMarket(): Promise<MarketSnapshot> {
     volume: string;
     quoteVolume: string;
   };
-
   const klines = (await klinesRes.json()) as Array<
     [number, string, string, string, string, string, ...unknown[]]
   >;
 
-  const closes = klines.map((k) => parseFloat(k[4]));
-  const volumes = klines.map((k) => parseFloat(k[5]));
-  const price = parseFloat(ticker.lastPrice);
-  const change24h = parseFloat(ticker.priceChangePercent);
-  const high24h = parseFloat(ticker.highPrice);
-  const low24h = parseFloat(ticker.lowPrice);
-  const volume24h = parseFloat(ticker.volume);
-  const quoteVolume24h = parseFloat(ticker.quoteVolume);
+  return {
+    price: parseFloat(ticker.lastPrice),
+    change24h: parseFloat(ticker.priceChangePercent),
+    high24h: parseFloat(ticker.highPrice),
+    low24h: parseFloat(ticker.lowPrice),
+    volume24h: parseFloat(ticker.volume),
+    quoteVolume24h: parseFloat(ticker.quoteVolume),
+    closes: klines.map((k) => parseFloat(k[4])),
+    volumes: klines.map((k) => parseFloat(k[5])),
+    source: label,
+  };
+}
 
-  const features = calcFeatures(closes, volumes);
+async function fromCoinbase(): Promise<RawMarket> {
+  const [tickerRes, candlesRes, statsRes] = await Promise.all([
+    fetch("https://api.exchange.coinbase.com/products/BTC-USD/ticker", fetchOpts),
+    fetch(
+      "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=60",
+      fetchOpts
+    ),
+    fetch("https://api.exchange.coinbase.com/products/BTC-USD/stats", fetchOpts),
+  ]);
+
+  if (!tickerRes.ok) {
+    throw new Error("coinbase ticker=" + tickerRes.status);
+  }
+
+  const ticker = (await tickerRes.json()) as { price: string; volume?: string };
+  const price = parseFloat(ticker.price);
+
+  let closes: number[] = [price];
+  let volumes: number[] = [parseFloat(ticker.volume || "0") || 1];
+
+  if (candlesRes.ok) {
+    // Coinbase candles: [ time, low, high, open, close, volume ] newest first
+    const candles = (await candlesRes.json()) as number[][];
+    const ordered = candles.slice().reverse();
+    closes = ordered.map((c) => c[4]).filter((n) => Number.isFinite(n));
+    volumes = ordered.map((c) => c[5]).filter((n) => Number.isFinite(n));
+  }
+
+  let high24h = price;
+  let low24h = price;
+  let change24h = 0;
+  let volume24h = volumes.reduce((a, b) => a + b, 0);
+  let quoteVolume24h = volume24h * price;
+
+  if (statsRes.ok) {
+    const stats = (await statsRes.json()) as {
+      high?: string;
+      low?: string;
+      open?: string;
+      volume?: string;
+    };
+    high24h = parseFloat(stats.high || String(price));
+    low24h = parseFloat(stats.low || String(price));
+    const open = parseFloat(stats.open || String(price));
+    change24h = open ? ((price - open) / open) * 100 : 0;
+    if (stats.volume) volume24h = parseFloat(stats.volume);
+    quoteVolume24h = volume24h * price;
+  }
+
+  return {
+    price,
+    change24h,
+    high24h,
+    low24h,
+    volume24h,
+    quoteVolume24h,
+    closes: closes.length ? closes : [price],
+    volumes: volumes.length ? volumes : [1],
+    source: "coinbase-public",
+  };
+}
+
+async function loadRawMarket(): Promise<RawMarket> {
+  const attempts: Array<() => Promise<RawMarket>> = [
+    () => fromBinanceHost("https://data-api.binance.vision", "binance-vision"),
+    () => fromBinanceHost("https://api.binance.us", "binance-us"),
+    () => fromCoinbase(),
+  ];
+
+  const errors: string[] = [];
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch (err) {
+      errors.push((err as Error).message);
+    }
+  }
+  throw new Error("All public feeds failed: " + errors.join(" | "));
+}
+
+export async function fetchLiveMarket(): Promise<MarketSnapshot> {
+  const raw = await loadRawMarket();
+  const features = calcFeatures(raw.closes, raw.volumes);
   const now = new Date().toISOString();
 
-  const dataQuality = closes.length >= 30 ? 0.92 : closes.length >= 10 ? 0.8 : 0.55;
+  const dataQuality =
+    raw.closes.length >= 30 ? 0.92 : raw.closes.length >= 10 ? 0.8 : 0.7;
   const regime = detectRegime(features.realized_vol, features.momentum_5, now);
   const signal = inferBaseline(dataQuality, features);
 
@@ -239,18 +329,18 @@ export async function fetchLiveMarket(): Promise<MarketSnapshot> {
         : "critical";
 
   const sparkline =
-    closes.length > 40
-      ? closes.filter((_, i) => i % 2 === 0).slice(-30)
-      : closes.slice(-30);
+    raw.closes.length > 40
+      ? raw.closes.filter((_, i) => i % 2 === 0).slice(-30)
+      : raw.closes.slice(-30);
 
   return {
     symbol: SYMBOL,
-    price,
-    change24h,
-    high24h,
-    low24h,
-    volume24h,
-    quoteVolume24h,
+    price: raw.price,
+    change24h: raw.change24h,
+    high24h: raw.high24h,
+    low24h: raw.low24h,
+    volume24h: raw.volume24h,
+    quoteVolume24h: raw.quoteVolume24h,
     regime: {
       regime: regime.regime,
       confidence: regime.confidence,
@@ -262,6 +352,6 @@ export async function fetchLiveMarket(): Promise<MarketSnapshot> {
     features,
     signal,
     sparkline,
-    source: "binance-public",
+    source: raw.source,
   };
 }
