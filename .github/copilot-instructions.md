@@ -1,0 +1,1 @@
+Follow AGENTS.md. This is a non-executing BTCUSD intelligence system. Never add trade execution. Default = NO TRADE. Prefer smallest correct changes. Use existing packages (shared, features, regime, ml, db). Worker is long-running; web is Next.js on Vercel.
