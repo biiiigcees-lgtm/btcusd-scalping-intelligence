@@ -2,7 +2,7 @@
  * Market Data + Feature + Inference Worker
  * Single source of truth for market_state published to Redis.
  * Primary evaluation timeframe = 15m.
- * Directional inference: Lorentzian KNN (gated) with baseline NO TRADE fallback.
+ * Directional: Lorentzian KNN (gated). Anticipation: independent vol/breakout score.
  */
 import { createRedis, safeConnect } from "./redis";
 import {
@@ -20,7 +20,7 @@ import {
   PRIMARY_EXCHANGE,
   PRIMARY_TIMEFRAME,
 } from "@btc/shared";
-import { calculateMvpFeatures } from "@btc/features";
+import { calculateMvpFeatures, computeAnticipation } from "@btc/features";
 import { detectRegime } from "@btc/regime";
 import { inferBaseline } from "@btc/ml";
 import {
@@ -128,7 +128,6 @@ function processTrade(trade: Trade) {
   if (closed1m) persistCandle(closed1m).catch(() => {});
   if (closed15m) {
     persistCandle(closed15m).catch(() => {});
-    // Re-run classifier only on closed 15m bars (not every trade)
     const dataQuality = quality.getScore();
     lastGated = runLorentzian(dataQuality);
 
@@ -156,7 +155,6 @@ function processTrade(trade: Trade) {
         dataQuality,
         createdAt: new Date().toISOString(),
       };
-      // Fix regime on signal from latest state below — set after regime computed
       publishSignal(signal);
     }
   }
@@ -183,7 +181,33 @@ function processTrade(trade: Trade) {
     trade.tradeTime
   );
 
-  // Prefer last gated Lorentzian result; else baseline NO TRADE
+  // Anticipation — independent of direction; suppress display noise if quality bad
+  const anticipationRaw = computeAnticipation(
+    primaryCandles.map((c) => ({
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+    }))
+  );
+  const anticipation =
+    dataQuality < DATA_QUALITY_THRESHOLD
+      ? {
+          ...anticipationRaw,
+          score: 0,
+          label: "quiet" as const,
+          explanation: {
+            ...anticipationRaw.explanation,
+            what: "Suppressed — data quality below threshold",
+            contradictory: [
+              ...anticipationRaw.explanation.contradictory,
+              `data_quality ${(dataQuality * 100).toFixed(0)}% < ${(DATA_QUALITY_THRESHOLD * 100).toFixed(0)}%`,
+            ],
+          },
+        }
+      : anticipationRaw;
+
   let signalBlock: MarketState["signal"];
   if (lastGated) {
     signalBlock = {
@@ -212,8 +236,7 @@ function processTrade(trade: Trade) {
           dataQuality < DATA_QUALITY_THRESHOLD
             ? [`data_quality ${(dataQuality * 100).toFixed(0)}% below threshold`]
             : [],
-        calibrationNote:
-          "Human remains final decision maker",
+        calibrationNote: "Human remains final decision maker",
       },
     };
   }
@@ -252,6 +275,7 @@ function processTrade(trade: Trade) {
       price: features.values.price ?? lastPrice,
     },
     signal: signalBlock,
+    anticipation,
     priceHistory: primaryCloses.slice(-48),
     candles: chartCandles,
     source: activeSource,
@@ -341,7 +365,7 @@ async function main() {
   console.log(`[worker] Redis: ${REDIS_URL}`);
   console.log(`[worker] USE_MOCK_FEED=${USE_MOCK}`);
   console.log(`[worker] Primary timeframe: ${PRIMARY_TIMEFRAME}`);
-  console.log("[worker] Classifier: Lorentzian KNN (gated)");
+  console.log("[worker] Classifier: Lorentzian KNN (gated) + anticipation gauge");
   await initPersistence();
 
   try {
