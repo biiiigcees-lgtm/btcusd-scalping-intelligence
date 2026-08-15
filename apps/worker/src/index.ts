@@ -1,7 +1,8 @@
 /**
  * Market Data + Feature + Inference Worker
  * Single source of truth for market_state published to Redis.
- * Primary evaluation timeframe = 15m (aggregated from trades via 1m).
+ * Primary evaluation timeframe = 15m.
+ * Directional inference: Lorentzian KNN (gated) with baseline NO TRADE fallback.
  */
 import { createRedis, safeConnect } from "./redis";
 import {
@@ -22,6 +23,12 @@ import {
 import { calculateMvpFeatures } from "@btc/features";
 import { detectRegime } from "@btc/regime";
 import { inferBaseline } from "@btc/ml";
+import {
+  LorentzianClassifier,
+  gateInference,
+  type GatedSignal,
+  type Ohlcv,
+} from "@btc/ml-lorentzian";
 import type { Trade, MarketState, Signal, SystemHealth } from "@btc/shared";
 import { randomUUID } from "crypto";
 import { BinanceTradeFeed } from "./feeds/binance";
@@ -36,10 +43,12 @@ const redis = createRedis(REDIS_URL);
 let redisReady = false;
 const quality = new DataQualityTracker();
 const candles = new CandleAggregator();
+const lorentzian = new LorentzianClassifier();
 
 let lastPrice = 0;
 let feedConnected = false;
 let activeSource = USE_MOCK ? "mock" : "binance-public-ws";
+let lastGated: GatedSignal | null = null;
 
 function deriveExtraFeatures(prices: number[]) {
   if (prices.length < 3) {
@@ -56,6 +65,23 @@ function deriveExtraFeatures(prices: number[]) {
   const range_position = hi > lo ? (last - lo) / (hi - lo) : 0.5;
 
   return { momentum_5, range_position };
+}
+
+function barsToOhlcv(): Ohlcv[] {
+  return candles.getPrimaryCandles().map((c) => ({
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  }));
+}
+
+function runLorentzian(dataQuality: number): GatedSignal {
+  const ohlcv = barsToOhlcv();
+  lorentzian.setBars(ohlcv);
+  const inference = lorentzian.infer();
+  return gateInference(inference, dataQuality);
 }
 
 async function publishMarketState(state: MarketState) {
@@ -100,12 +126,43 @@ function processTrade(trade: Trade) {
 
   const { closed1m, closed15m } = candles.onTrade(trade);
   if (closed1m) persistCandle(closed1m).catch(() => {});
-  if (closed15m) persistCandle(closed15m).catch(() => {});
+  if (closed15m) {
+    persistCandle(closed15m).catch(() => {});
+    // Re-run classifier only on closed 15m bars (not every trade)
+    const dataQuality = quality.getScore();
+    lastGated = runLorentzian(dataQuality);
 
-  // Primary series = 15m closes (includes forming bar)
+    if (lastGated.direction !== null) {
+      const signal: Signal = {
+        signalId: randomUUID(),
+        timestamp: trade.tradeTime,
+        direction: lastGated.direction,
+        confidence: lastGated.confidence,
+        regime: "unknown",
+        featureSetId: "00000000-0000-0000-0000-000000000002",
+        modelVersion: lastGated.modelVersion,
+        explanation: {
+          what: lastGated.explanation.what,
+          why: lastGated.explanation.why,
+          supporting: lastGated.explanation.supporting,
+          contradictory: lastGated.explanation.contradictory,
+          confidence: lastGated.confidence,
+          calibrationNote: lastGated.explanation.calibrationNote,
+          dataQuality,
+          featureSetId: "00000000-0000-0000-0000-000000000002",
+          modelVersion: lastGated.modelVersion,
+        },
+        invalidation: { dataQualityBelow: DATA_QUALITY_THRESHOLD },
+        dataQuality,
+        createdAt: new Date().toISOString(),
+      };
+      // Fix regime on signal from latest state below — set after regime computed
+      publishSignal(signal);
+    }
+  }
+
   const primaryCloses = candles.getPrimaryCloses();
   const primaryCandles = candles.getPrimaryCandles();
-  // Synthetic volume series aligned to primary closes (use bar volumes)
   const primaryVolumes = primaryCandles.map((c) => c.volume);
 
   const dataQuality = quality.getScore();
@@ -125,7 +182,41 @@ function processTrade(trade: Trade) {
     0,
     trade.tradeTime
   );
-  const inference = inferBaseline(features, dataQuality);
+
+  // Prefer last gated Lorentzian result; else baseline NO TRADE
+  let signalBlock: MarketState["signal"];
+  if (lastGated) {
+    signalBlock = {
+      direction: lastGated.direction,
+      label: lastGated.label,
+      confidence: lastGated.confidence,
+      modelVersion: lastGated.modelVersion,
+      explanation: lastGated.explanation,
+    };
+  } else {
+    const baseline = inferBaseline(features, dataQuality);
+    signalBlock = {
+      direction: baseline.direction,
+      label: "NO TRADE",
+      confidence: baseline.confidence,
+      modelVersion: baseline.modelVersion,
+      explanation: {
+        what: "NO TRADE — waiting for Lorentzian readiness / 15m history",
+        why: [
+          "Baseline fallback until classifier has sufficient labeled history",
+          `Timeframe: ${PRIMARY_TIMEFRAME}`,
+          `Primary bars: ${primaryCloses.length}`,
+        ],
+        supporting: [],
+        contradictory:
+          dataQuality < DATA_QUALITY_THRESHOLD
+            ? [`data_quality ${(dataQuality * 100).toFixed(0)}% below threshold`]
+            : [],
+        calibrationNote:
+          "Human remains final decision maker",
+      },
+    };
+  }
 
   const systemHealth: SystemHealth =
     dataQuality >= DATA_QUALITY_THRESHOLD
@@ -133,50 +224,6 @@ function processTrade(trade: Trade) {
       : dataQuality >= 0.6
         ? "degraded"
         : "critical";
-
-  const why = [
-    "Baseline model is locked at NO TRADE until research promotion",
-    `Timeframe: ${PRIMARY_TIMEFRAME}`,
-    `Realized vol (${PRIMARY_TIMEFRAME}): ${((features.values.realized_vol ?? 0) * 100).toFixed(3)}%`,
-    `5-bar momentum (${PRIMARY_TIMEFRAME}): ${(extra.momentum_5 * 100).toFixed(3)}%`,
-  ];
-  const supporting: string[] = [];
-  const contradictory: string[] = [];
-
-  if (dataQuality < DATA_QUALITY_THRESHOLD) {
-    contradictory.push(
-      `Data quality ${(dataQuality * 100).toFixed(0)}% below ${(DATA_QUALITY_THRESHOLD * 100).toFixed(0)}% threshold`
-    );
-  } else {
-    supporting.push("Public feed healthy and within quality band");
-  }
-  for (const r of qSnap.reasons) {
-    contradictory.push(`quality:${r}`);
-  }
-  if (primaryCloses.length < 10) {
-    contradictory.push(
-      `Insufficient ${PRIMARY_TIMEFRAME} history (${primaryCloses.length} bars)`
-    );
-  }
-
-  const signalBlock = {
-    direction: inference.direction,
-    label: (inference.direction === "long"
-      ? "LONG"
-      : inference.direction === "short"
-        ? "SHORT"
-        : "NO TRADE") as "NO TRADE" | "LONG" | "SHORT",
-    confidence: inference.confidence,
-    modelVersion: inference.modelVersion,
-    explanation: {
-      what: "NO TRADE — human remains final decision maker",
-      why,
-      supporting,
-      contradictory,
-      calibrationNote:
-        "Placeholder baseline — no directional bias until a validated model is promoted",
-    },
-  };
 
   const chartCandles = primaryCandles.slice(-48).map((c) => ({
     openTime: c.openTime,
@@ -211,39 +258,11 @@ function processTrade(trade: Trade) {
     timeframe: PRIMARY_TIMEFRAME,
   };
   publishMarketState(marketState);
-
-  if (inference.direction !== null && dataQuality >= DATA_QUALITY_THRESHOLD) {
-    const signal: Signal = {
-      signalId: randomUUID(),
-      timestamp: trade.tradeTime,
-      direction: inference.direction,
-      confidence: inference.confidence,
-      regime: regime.regime,
-      featureSetId: features.featureSetId,
-      modelVersion: inference.modelVersion,
-      explanation: {
-        what: `${inference.direction} bias`,
-        why: [`baseline model on ${PRIMARY_TIMEFRAME}`],
-        supporting: [],
-        contradictory: qSnap.reasons.map((r) => `quality:${r}`),
-        confidence: inference.confidence,
-        calibrationNote: "placeholder baseline — no real calibration yet",
-        dataQuality,
-        featureSetId: features.featureSetId,
-        modelVersion: inference.modelVersion,
-      },
-      invalidation: { dataQualityBelow: DATA_QUALITY_THRESHOLD },
-      dataQuality,
-      createdAt: new Date().toISOString(),
-    };
-    publishSignal(signal);
-  }
 }
 
 function startMockFeed() {
   console.log("[worker] MOCK feed active (USE_MOCK_FEED=true)");
   activeSource = "mock";
-  // Faster mock so 1m/15m bars form during local testing
   setInterval(() => {
     const change = (Math.random() - 0.5) * 40;
     const price = Math.max(1000, (lastPrice || 65000) + change);
@@ -297,6 +316,8 @@ function startHealthServer(_feed: BinanceTradeFeed | null) {
         source: activeSource,
         timeframe: PRIMARY_TIMEFRAME,
         primaryBars: primary.length,
+        lorentzianBars: lorentzian.getBarCount(),
+        lastSignal: lastGated?.label ?? "NONE",
         forming15m: candles.getForming15m()?.openTime ?? null,
         timestamp: new Date().toISOString(),
       };
@@ -320,14 +341,17 @@ async function main() {
   console.log(`[worker] Redis: ${REDIS_URL}`);
   console.log(`[worker] USE_MOCK_FEED=${USE_MOCK}`);
   console.log(`[worker] Primary timeframe: ${PRIMARY_TIMEFRAME}`);
+  console.log("[worker] Classifier: Lorentzian KNN (gated)");
   await initPersistence();
 
-  // Reconstruct 15m from stored 1m on restart when DB is available
   try {
     const hist = await loadRecent1mCandles();
     if (hist.length) {
       candles.seedFrom1m(hist);
-      console.log(`[worker] Seeded ${hist.length} 1m bars → ${candles.getPrimaryCloses().length} 15m closes`);
+      lorentzian.setBars(barsToOhlcv());
+      console.log(
+        `[worker] Seeded ${hist.length} 1m bars → ${candles.getPrimaryCloses().length} 15m · lorentzian ${lorentzian.getBarCount()} bars`
+      );
     }
   } catch (err) {
     console.warn("[worker] seed from DB skipped", (err as Error).message);

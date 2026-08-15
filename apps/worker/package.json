@@ -15,6 +15,7 @@
     "@btc/features": "workspace:*",
     "@btc/regime": "workspace:*",
     "@btc/ml": "workspace:*",
+    "@btc/ml-lorentzian": "workspace:*",
     "@btc/db": "workspace:*",
     "ioredis": "^5.4.1",
     "ws": "^8.18.0",
