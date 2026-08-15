@@ -29,14 +29,18 @@ pnpm --filter @btc/web dev
 - UI: http://localhost:3000
 - Worker health: http://localhost:8081/health
 
-## Structure
+Set `DASHBOARD_SECRET` in production; then open `/?key=<secret>` once to set the cookie, or send `x-dashboard-secret` header.
 
-| Path | Role |
-|------|------|
-| `apps/web` | Next.js 15 UI + SSE |
-| `apps/worker` | Binance public WS / mock + features + regime + baseline ML |
+## Architecture (Phase 05+)
+
+| Component | Role |
+|-----------|------|
+| `apps/worker` | **Single source of truth** — Binance public WS / mock, features, regime, quality, baseline ML → Redis `stream:market_state` |
+| `apps/web` | Next.js 15 UI + SSE **relay only** (no exchange polling, no recompute) |
 | `packages/*` | shared, features, regime, ml, db, config |
 | `docs/` | Foundation 00–04 (locked) |
+
+If Redis/worker is down the UI shows **degraded** and does not fall back to direct exchange calls.
 
 ## Constraints
 
@@ -44,5 +48,6 @@ pnpm --filter @btc/web dev
 - Data quality < 0.85 → NO TRADE
 - Baseline model emits no direction until research promotion
 - Public market data only
+- Worker is the only process that talks to exchanges
 
-See `AGENTS.md` for agent/engineering workflow.
+See `AGENTS.md` for agent/engineering workflow and remaining Phase 05+ priority order.
