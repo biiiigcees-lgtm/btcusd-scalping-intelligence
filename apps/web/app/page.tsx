@@ -1,6 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
+
+const CandleChart = dynamic(
+  () => import("@/components/CandleChart").then((m) => m.CandleChart),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-[280px] flex items-center justify-center text-zinc-600 text-xs border border-zinc-800/80 rounded-lg">
+        Loading chart…
+      </div>
+    ),
+  }
+);
 
 type Regime =
   | "trending_up"
@@ -84,49 +97,6 @@ function regimeLabel(r?: string) {
   return r.replace(/_/g, " ");
 }
 
-function Sparkline({ values }: { values?: number[] }) {
-  const path = useMemo(() => {
-    if (!values || values.length < 2) return null;
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const span = max - min || 1;
-    const w = 320;
-    const h = 56;
-    const pts = values.map((v, i) => {
-      const x = (i / (values.length - 1)) * w;
-      const y = h - ((v - min) / span) * (h - 4) - 2;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    });
-    return `M ${pts.join(" L ")}`;
-  }, [values]);
-
-  if (!path) {
-    return (
-      <div className="h-14 flex items-center text-zinc-600 text-xs">
-        Waiting for {"15m"} history from worker…
-      </div>
-    );
-  }
-
-  const up =
-    values && values.length >= 2
-      ? values[values.length - 1] >= values[0]
-      : true;
-
-  return (
-    <svg viewBox="0 0 320 56" className="w-full h-14" preserveAspectRatio="none">
-      <path
-        d={path}
-        fill="none"
-        stroke={up ? "#34d399" : "#f87171"}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 export default function HomePage() {
   const [state, setState] = useState<MarketState | null>(null);
   const [connected, setConnected] = useState(false);
@@ -187,9 +157,7 @@ export default function HomePage() {
   const health = state?.systemHealth ?? "unknown";
   const signalLabel = state?.signal?.label ?? "NO TRADE";
   const features = state?.features;
-  const history =
-    state?.priceHistory ??
-    state?.candles?.map((c) => c.close);
+  const history = state?.priceHistory ?? state?.candles?.map((c) => c.close);
   const timeframe = state?.timeframe ?? "15m";
 
   const priceClass =
@@ -269,6 +237,7 @@ export default function HomePage() {
           </div>
         ) : null}
 
+        {/* Hero price */}
         <section className="rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900/80 to-zinc-950 p-4 sm:p-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -289,18 +258,13 @@ export default function HomePage() {
                 ) : null}
               </div>
             </div>
-            <div className="w-full sm:w-64 opacity-90">
-              <Sparkline values={history} />
-              <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
-                <span>
-                  {timeframe} closes · {history?.length ?? 0} bars
-                </span>
-                <span>
-                  {state?.lastUpdate
-                    ? new Date(state.lastUpdate).toLocaleTimeString()
-                    : "—"}
-                </span>
+            <div className="text-right text-[10px] text-zinc-600 space-y-1">
+              <div>
+                {state?.lastUpdate
+                  ? new Date(state.lastUpdate).toLocaleTimeString()
+                  : "—"}
               </div>
+              <div className="uppercase tracking-wider">{timeframe} primary</div>
             </div>
           </div>
 
@@ -330,6 +294,16 @@ export default function HomePage() {
               </div>
             </div>
           </div>
+        </section>
+
+        {/* Chart — full width */}
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-3 sm:p-4">
+          <CandleChart
+            candles={state?.candles}
+            closes={history}
+            timeframe={timeframe}
+            height={280}
+          />
         </section>
 
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
