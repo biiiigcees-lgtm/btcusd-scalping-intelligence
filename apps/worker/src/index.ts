@@ -1,8 +1,7 @@
 /**
  * Market Data + Feature + Inference Worker
  * Single source of truth for market_state published to Redis.
- * Primary evaluation timeframe = 15m.
- * Directional: Lorentzian KNN (gated). Anticipation: independent vol/breakout score.
+ * Primary TF = 15m. Hot-standby feeds. Lorentzian + anticipation. Circuit breaker.
  */
 import { createRedis, safeConnect } from "./redis";
 import {
@@ -26,14 +25,16 @@ import { inferBaseline } from "@btc/ml";
 import {
   LorentzianClassifier,
   gateInference,
+  MODEL_VERSION as LORENTZIAN_VERSION,
   type GatedSignal,
   type Ohlcv,
 } from "@btc/ml-lorentzian";
 import type { Trade, MarketState, Signal, SystemHealth } from "@btc/shared";
 import { randomUUID } from "crypto";
-import { BinanceTradeFeed } from "./feeds/binance";
+import { FeedManager } from "./feeds/manager";
 import { DataQualityTracker } from "./quality/data-quality";
 import { CandleAggregator } from "./candles/aggregator";
+import { CircuitBreaker } from "./circuit-breaker";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const USE_MOCK = process.env.USE_MOCK_FEED === "true";
@@ -44,11 +45,13 @@ let redisReady = false;
 const quality = new DataQualityTracker();
 const candles = new CandleAggregator();
 const lorentzian = new LorentzianClassifier();
+const circuit = new CircuitBreaker(LORENTZIAN_VERSION);
 
 let lastPrice = 0;
 let feedConnected = false;
-let activeSource = USE_MOCK ? "mock" : "binance-public-ws";
+let activeSource = USE_MOCK ? "mock" : "binance-global";
 let lastGated: GatedSignal | null = null;
+let feedManager: FeedManager | null = null;
 
 function deriveExtraFeatures(prices: number[]) {
   if (prices.length < 3) {
@@ -81,7 +84,35 @@ function runLorentzian(dataQuality: number): GatedSignal {
   const ohlcv = barsToOhlcv();
   lorentzian.setBars(ohlcv);
   const inference = lorentzian.infer();
-  return gateInference(inference, dataQuality);
+  let gated = gateInference(inference, dataQuality);
+
+  // Circuit breaker overrides any directional output
+  if (circuit.shouldSuppressDirectional() && gated.direction !== null) {
+    const st = circuit.getState();
+    gated = {
+      direction: null,
+      label: "NO TRADE",
+      confidence: 0,
+      modelVersion: gated.modelVersion,
+      explanation: {
+        what: "NO TRADE — circuit breaker open (live performance drift)",
+        why: [
+          ...gated.explanation.why,
+          `Circuit: ${st.reason}`,
+          st.liveHitRate != null
+            ? `Live hit rate ${(st.liveHitRate * 100).toFixed(1)}% over ${st.sampleSize} samples`
+            : "Insufficient live samples",
+        ],
+        supporting: gated.explanation.supporting,
+        contradictory: [
+          ...gated.explanation.contradictory,
+          "circuit_breaker_open",
+        ],
+        calibrationNote: gated.explanation.calibrationNote,
+      },
+    };
+  }
+  return gated;
 }
 
 async function publishMarketState(state: MarketState) {
@@ -119,7 +150,11 @@ async function publishSignal(signal: Signal) {
   }
 }
 
-function processTrade(trade: Trade) {
+function processTrade(trade: Trade, source?: string) {
+  if (source) {
+    activeSource = source;
+    quality.setActiveSource(source);
+  }
   quality.onTrade(trade.tradeTime, trade.receivedAt);
   persistTrade(trade).catch(() => {});
   lastPrice = trade.price;
@@ -181,7 +216,6 @@ function processTrade(trade: Trade) {
     trade.tradeTime
   );
 
-  // Anticipation — independent of direction; suppress display noise if quality bad
   const anticipationRaw = computeAnticipation(
     primaryCandles.map((c) => ({
       open: c.open,
@@ -241,6 +275,25 @@ function processTrade(trade: Trade) {
     };
   }
 
+  // Surface circuit state in explanation when open
+  if (circuit.shouldSuppressDirectional() && signalBlock) {
+    const st = circuit.getState();
+    signalBlock = {
+      ...signalBlock,
+      direction: null,
+      label: "NO TRADE",
+      confidence: 0,
+      explanation: {
+        ...signalBlock.explanation,
+        what: "NO TRADE — circuit breaker open",
+        contradictory: [
+          ...signalBlock.explanation.contradictory,
+          st.reason,
+        ],
+      },
+    };
+  }
+
   const systemHealth: SystemHealth =
     dataQuality >= DATA_QUALITY_THRESHOLD
       ? "healthy"
@@ -287,52 +340,67 @@ function processTrade(trade: Trade) {
 function startMockFeed() {
   console.log("[worker] MOCK feed active (USE_MOCK_FEED=true)");
   activeSource = "mock";
+  quality.setActiveSource("mock");
   setInterval(() => {
     const change = (Math.random() - 0.5) * 40;
     const price = Math.max(1000, (lastPrice || 65000) + change);
     const qty = Math.random() * 0.5 + 0.01;
     const now = new Date().toISOString();
-    processTrade({
-      tradeId: randomUUID(),
-      exchange: PRIMARY_EXCHANGE,
-      symbol: SYMBOL,
-      price,
-      quantity: qty,
-      side: Math.random() > 0.5 ? "buy" : "sell",
-      tradeTime: now,
-      receivedAt: now,
-    });
+    processTrade(
+      {
+        tradeId: randomUUID(),
+        exchange: PRIMARY_EXCHANGE,
+        symbol: SYMBOL,
+        price,
+        quantity: qty,
+        side: Math.random() > 0.5 ? "buy" : "sell",
+        tradeTime: now,
+        receivedAt: now,
+      },
+      "mock"
+    );
   }, 400);
 }
 
-function startRealFeed(): BinanceTradeFeed {
-  console.log("[worker] REAL Binance public WebSocket feed");
-  activeSource = "binance-public-ws";
-  const feed = new BinanceTradeFeed({
-    onTrade: (trade) => processTrade(trade),
-    onStatus: ({ connected, reason, reconnectAttempt }) => {
-      feedConnected = connected;
+function startRealFeeds() {
+  console.log("[worker] REAL feeds — primary + hot standby");
+  feedManager = new FeedManager({
+    onTrade: (trade, source) => {
+      feedConnected = true;
+      processTrade(trade, source);
+    },
+    onActiveSourceChange: (source, reason) => {
+      activeSource = source;
+      quality.onSourceSwitch(source, reason);
+    },
+    onStatus: ({ source, connected, reason }) => {
       quality.onConnectionStatus(connected, reason);
       if (!connected) {
-        console.warn(
-          `[worker] Feed disconnected reason=${reason} attempt=${reconnectAttempt ?? "-"}`
-        );
+        console.warn(`[worker] Feed ${source} disconnected reason=${reason}`);
       }
+      feedConnected = feedManager?.isAnyConnected() ?? false;
     },
   });
-  feed.start();
-  setInterval(() => quality.onSilence(feed.getSilenceMs()), 5_000);
-  return feed;
+  feedManager.start();
+  activeSource = feedManager.getActiveSource();
+  quality.setActiveSource(activeSource);
+  setInterval(() => {
+    if (feedManager) quality.onSilence(feedManager.getSilenceMs());
+  }, 5_000);
 }
 
-function startHealthServer(_feed: BinanceTradeFeed | null) {
+function startHealthServer() {
   const server = http.createServer((req, res) => {
     if (req.url === "/health" || req.url === "/healthz") {
       const snap = quality.getSnapshot();
       const primary = candles.getPrimaryCloses();
       const body = {
         status: snap.score >= DATA_QUALITY_THRESHOLD ? "ok" : "degraded",
-        feed: USE_MOCK ? "mock" : feedConnected ? "connected" : "disconnected",
+        feed: USE_MOCK
+          ? "mock"
+          : feedConnected
+            ? "connected"
+            : "disconnected",
         dataQuality: snap,
         lastPrice,
         symbol: SYMBOL,
@@ -342,6 +410,7 @@ function startHealthServer(_feed: BinanceTradeFeed | null) {
         primaryBars: primary.length,
         lorentzianBars: lorentzian.getBarCount(),
         lastSignal: lastGated?.label ?? "NONE",
+        circuit: circuit.getState(),
         forming15m: candles.getForming15m()?.openTime ?? null,
         timestamp: new Date().toISOString(),
       };
@@ -365,7 +434,9 @@ async function main() {
   console.log(`[worker] Redis: ${REDIS_URL}`);
   console.log(`[worker] USE_MOCK_FEED=${USE_MOCK}`);
   console.log(`[worker] Primary timeframe: ${PRIMARY_TIMEFRAME}`);
-  console.log("[worker] Classifier: Lorentzian KNN (gated) + anticipation gauge");
+  console.log(
+    "[worker] Classifier: Lorentzian KNN · anticipation · hot-standby · circuit breaker"
+  );
   await initPersistence();
 
   try {
@@ -382,13 +453,12 @@ async function main() {
   }
 
   redisReady = await safeConnect(redis);
-  let feed: BinanceTradeFeed | null = null;
   if (USE_MOCK) startMockFeed();
-  else feed = startRealFeed();
-  const healthServer = startHealthServer(feed);
+  else startRealFeeds();
+  const healthServer = startHealthServer();
   const shutdown = () => {
     console.log("[worker] Shutting down");
-    feed?.stop();
+    feedManager?.stop();
     healthServer.close();
     redis.quit().finally(() => process.exit(0));
   };
