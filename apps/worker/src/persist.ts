@@ -1,4 +1,4 @@
-import type { Trade, MarketState, Signal } from "@btc/shared";
+import type { Trade, MarketState, Signal, Candle } from "@btc/shared";
 
 let db: unknown = null;
 let enabled = false;
@@ -37,6 +37,74 @@ export async function persistTrade(trade: Trade): Promise<void> {
     });
   } catch (err) {
     console.error("[persist] trade insert failed", (err as Error).message);
+  }
+}
+
+export async function persistCandle(candle: Candle): Promise<void> {
+  if (!enabled || !db || !candle.closed) return;
+  try {
+    const { candles } = await import("@btc/db");
+    const d = db as any;
+    await d
+      .insert(candles)
+      .values({
+        exchange: candle.exchange,
+        symbol: candle.symbol,
+        interval: candle.interval,
+        openTime: new Date(candle.openTime),
+        open: String(candle.open),
+        high: String(candle.high),
+        low: String(candle.low),
+        close: String(candle.close),
+        volume: String(candle.volume),
+      })
+      .onConflictDoUpdate({
+        target: [candles.exchange, candles.symbol, candles.interval, candles.openTime],
+        set: {
+          open: String(candle.open),
+          high: String(candle.high),
+          low: String(candle.low),
+          close: String(candle.close),
+          volume: String(candle.volume),
+        },
+      });
+  } catch (err) {
+    console.error("[persist] candle insert failed", (err as Error).message);
+  }
+}
+
+export async function loadRecent1mCandles(limit = 1500): Promise<Candle[]> {
+  if (!enabled || !db) return [];
+  try {
+    const { candles } = await import("@btc/db");
+    const { desc } = await import("drizzle-orm");
+    const d = db as any;
+    const rows = await d
+      .select()
+      .from(candles)
+      .where(/* interval = 1m handled in filter below */)
+      .orderBy(desc(candles.openTime))
+      .limit(limit);
+
+    // Filter 1m in JS to avoid extra drizzle imports complexity
+    return (rows as any[])
+      .filter((r) => r.interval === "1m")
+      .reverse()
+      .map((r) => ({
+        exchange: r.exchange,
+        symbol: r.symbol,
+        interval: "1m" as const,
+        openTime: new Date(r.openTime).toISOString(),
+        open: Number(r.open),
+        high: Number(r.high),
+        low: Number(r.low),
+        close: Number(r.close),
+        volume: Number(r.volume),
+        closed: true,
+      }));
+  } catch (err) {
+    console.error("[persist] load 1m candles failed", (err as Error).message);
+    return [];
   }
 }
 
