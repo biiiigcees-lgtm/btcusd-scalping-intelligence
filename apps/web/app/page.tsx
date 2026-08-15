@@ -32,6 +32,22 @@ type QualitySnapshot = {
   lastHealthyAt?: string;
 };
 
+type AnticipationState = {
+  score?: number;
+  label?: "quiet" | "building" | "elevated" | "high";
+  components?: {
+    squeeze?: number;
+    volumeAccel?: number;
+    rangeExtreme?: number;
+  };
+  explanation?: {
+    what?: string;
+    why?: string[];
+    supporting?: string[];
+    contradictory?: string[];
+  };
+};
+
 type MarketState = {
   symbol?: string;
   price?: number;
@@ -65,6 +81,7 @@ type MarketState = {
       calibrationNote?: string;
     };
   };
+  anticipation?: AnticipationState;
   priceHistory?: number[];
   candles?: Array<{
     openTime: string;
@@ -160,6 +177,9 @@ export default function HomePage() {
   const features = state?.features;
   const history = state?.priceHistory ?? state?.candles?.map((c) => c.close);
   const timeframe = state?.timeframe ?? "15m";
+  const ant = state?.anticipation;
+  const antScore = ant?.score ?? 0;
+  const antLabel = ant?.label ?? "quiet";
 
   const isLong = signalLabel === "LONG";
   const isShort = signalLabel === "SHORT";
@@ -195,6 +215,15 @@ export default function HomePage() {
     : isShort
       ? "bg-rose-400"
       : "bg-zinc-500";
+
+  const antColor =
+    antLabel === "high"
+      ? "bg-amber-400"
+      : antLabel === "elevated"
+        ? "bg-amber-500/80"
+        : antLabel === "building"
+          ? "bg-yellow-600/70"
+          : "bg-zinc-600";
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -344,55 +373,15 @@ export default function HomePage() {
           />
         </section>
 
+        {/* Two independent gauges — never merged */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
-            <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
-              Bot analysis · {timeframe}
-            </h2>
-            <div className="space-y-3">
-              <FeatureRow
-                label={`1-bar return (${timeframe})`}
-                value={features?.return_1 != null ? fmtPct(features.return_1 * 100) : "—"}
-              />
-              <FeatureRow
-                label={`Realized vol (${timeframe})`}
-                value={
-                  features?.realized_vol != null
-                    ? `${(features.realized_vol * 100).toFixed(3)}%`
-                    : "—"
-                }
-              />
-              <FeatureRow
-                label={`5-bar momentum (${timeframe})`}
-                value={
-                  features?.momentum_5 != null ? fmtPct(features.momentum_5 * 100) : "—"
-                }
-              />
-              <FeatureRow
-                label="Volume intensity"
-                value={
-                  features?.volume_intensity != null
-                    ? `${features.volume_intensity.toFixed(2)}×`
-                    : "—"
-                }
-              />
-              <FeatureRow
-                label="Range position"
-                value={
-                  features?.range_position != null
-                    ? `${(features.range_position * 100).toFixed(0)}% of local range`
-                    : "—"
-                }
-              />
-            </div>
-          </div>
-
-          {/* Directional signal gauge */}
+          {/* Directional */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5 flex flex-col">
-            <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
+            <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
               Directional signal · {timeframe}
             </h2>
-            <div className="flex-1 flex flex-col items-center justify-center text-center py-4">
+            <p className="text-[10px] text-zinc-600 mb-3">Which way — only if earned</p>
+            <div className="flex-1 flex flex-col items-center justify-center text-center py-2">
               <div
                 className={`inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm font-medium ${signalPillClass}`}
               >
@@ -400,7 +389,6 @@ export default function HomePage() {
                 {signalLabel}
               </div>
 
-              {/* Confidence gauge */}
               <div className="w-full max-w-xs mt-4">
                 <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
                   <span>Wilson confidence</span>
@@ -431,49 +419,142 @@ export default function HomePage() {
                 {state?.signal?.explanation?.what ??
                   "Signals must earn the right to appear. Default = NO TRADE."}
               </p>
-              {state?.signal?.explanation?.why?.length ? (
-                <ul className="mt-4 text-left w-full space-y-1.5">
-                  {state.signal.explanation.why.map((line) => (
-                    <li key={line} className="text-xs text-zinc-500 flex gap-2">
-                      <span className="text-zinc-700">·</span>
-                      <span>{line}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {state?.signal?.explanation?.supporting?.length ? (
-                <ul className="mt-3 text-left w-full space-y-1.5">
-                  {state.signal.explanation.supporting.map((line) => (
-                    <li key={line} className="text-xs text-emerald-600/80 flex gap-2">
-                      <span>+</span>
-                      <span>{line}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {state?.signal?.explanation?.contradictory?.length ? (
-                <ul className="mt-3 text-left w-full space-y-1.5">
-                  {state.signal.explanation.contradictory.map((line) => (
-                    <li key={line} className="text-xs text-amber-600/80 flex gap-2">
-                      <span>!</span>
-                      <span>{line}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <p className="text-[10px] text-zinc-700 mt-4">
-                {state?.signal?.explanation?.calibrationNote ??
-                  "Human remains final decision maker"}
+              {state?.signal?.explanation?.why?.slice(0, 4).map((line) => (
+                <p key={line} className="text-xs text-zinc-500 mt-1 text-left w-full">
+                  · {line}
+                </p>
+              ))}
+              {state?.signal?.explanation?.contradictory?.slice(0, 3).map((line) => (
+                <p key={line} className="text-xs text-amber-600/80 mt-1 text-left w-full">
+                  ! {line}
+                </p>
+              ))}
+            </div>
+          </div>
+
+          {/* Anticipation — independent */}
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5 flex flex-col">
+            <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
+              Anticipation · {timeframe}
+            </h2>
+            <p className="text-[10px] text-zinc-600 mb-3">
+              Something big coming? — not direction
+            </p>
+            <div className="flex-1 flex flex-col items-center justify-center text-center py-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-950 px-4 py-1.5 text-sm font-medium text-zinc-200 capitalize">
+                <span className={`h-2 w-2 rounded-full ${antColor}`} />
+                {antLabel}
+              </div>
+
+              <div className="w-full max-w-xs mt-4">
+                <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
+                  <span>Expansion setup</span>
+                  <span className="tabular-nums">{(antScore * 100).toFixed(0)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${antColor}`}
+                    style={{
+                      width: `${Math.min(100, Math.max(0, antScore * 100))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Component breakdown */}
+              <div className="w-full max-w-xs mt-4 space-y-2 text-left">
+                <ComponentBar
+                  label="Squeeze"
+                  value={ant?.components?.squeeze}
+                />
+                <ComponentBar
+                  label="Volume accel"
+                  value={ant?.components?.volumeAccel}
+                />
+                <ComponentBar
+                  label="Range extreme"
+                  value={ant?.components?.rangeExtreme}
+                />
+              </div>
+
+              <p className="text-zinc-400 text-sm mt-4 max-w-sm leading-relaxed">
+                {ant?.explanation?.what ??
+                  "Waiting for primary-TF history to score anticipation."}
               </p>
+              {ant?.explanation?.supporting?.slice(0, 2).map((line) => (
+                <p key={line} className="text-xs text-amber-500/80 mt-1 text-left w-full">
+                  + {line}
+                </p>
+              ))}
             </div>
           </div>
         </section>
 
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
+          <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
+            Bot analysis · {timeframe}
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+            <FeatureRow
+              label={`1-bar return (${timeframe})`}
+              value={features?.return_1 != null ? fmtPct(features.return_1 * 100) : "—"}
+            />
+            <FeatureRow
+              label={`Realized vol (${timeframe})`}
+              value={
+                features?.realized_vol != null
+                  ? `${(features.realized_vol * 100).toFixed(3)}%`
+                  : "—"
+              }
+            />
+            <FeatureRow
+              label={`5-bar momentum (${timeframe})`}
+              value={
+                features?.momentum_5 != null ? fmtPct(features.momentum_5 * 100) : "—"
+              }
+            />
+            <FeatureRow
+              label="Volume intensity"
+              value={
+                features?.volume_intensity != null
+                  ? `${features.volume_intensity.toFixed(2)}×`
+                  : "—"
+              }
+            />
+            <FeatureRow
+              label="Range position"
+              value={
+                features?.range_position != null
+                  ? `${(features.range_position * 100).toFixed(0)}% of local range`
+                  : "—"
+              }
+            />
+          </div>
+        </section>
+
         <footer className="pt-2 pb-6 text-center text-[11px] text-zinc-700">
-          Foundation 00–04 locked · Primary TF {timeframe} · Lorentzian KNN gated · No execution
+          Foundation 00–04 locked · Direction ≠ anticipation · Public data only · No execution
         </footer>
       </div>
     </main>
+  );
+}
+
+function ComponentBar({ label, value }: { label: string; value?: number }) {
+  const v = value ?? 0;
+  return (
+    <div>
+      <div className="flex justify-between text-[10px] text-zinc-500 mb-0.5">
+        <span>{label}</span>
+        <span className="tabular-nums">{(v * 100).toFixed(0)}%</span>
+      </div>
+      <div className="h-1 rounded-full bg-zinc-800 overflow-hidden">
+        <div
+          className="h-full rounded-full bg-zinc-500"
+          style={{ width: `${Math.min(100, Math.max(0, v * 100))}%` }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -499,7 +580,7 @@ function MetricCard({
 
 function FeatureRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 text-sm border-b border-zinc-800/60 pb-2 last:border-0 last:pb-0">
+    <div className="flex items-center justify-between gap-3 text-sm border-b border-zinc-800/60 pb-2">
       <span className="text-zinc-500 text-xs">{label}</span>
       <span className="tabular-nums text-zinc-200 font-medium">{value}</span>
     </div>
