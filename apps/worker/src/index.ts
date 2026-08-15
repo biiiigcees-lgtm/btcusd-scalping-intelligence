@@ -1,18 +1,23 @@
 /**
  * Market Data + Feature + Inference Worker
  * Single source of truth for market_state published to Redis.
- * Web app must never recompute regime/features/quality independently.
+ * Primary evaluation timeframe = 15m (aggregated from trades via 1m).
  */
 import { createRedis, safeConnect } from "./redis";
-import { initPersistence, persistTrade, persistSignal } from "./persist";
+import {
+  initPersistence,
+  persistTrade,
+  persistSignal,
+  persistCandle,
+  loadRecent1mCandles,
+} from "./persist";
 import http from "http";
 import {
   SYMBOL,
   REDIS_STREAMS,
   DATA_QUALITY_THRESHOLD,
   PRIMARY_EXCHANGE,
-  PLACEHOLDER_MODEL_VERSION,
-  INTERIM_PRICE_HISTORY_TF,
+  PRIMARY_TIMEFRAME,
 } from "@btc/shared";
 import { calculateMvpFeatures } from "@btc/features";
 import { detectRegime } from "@btc/regime";
@@ -21,6 +26,7 @@ import type { Trade, MarketState, Signal, SystemHealth } from "@btc/shared";
 import { randomUUID } from "crypto";
 import { BinanceTradeFeed } from "./feeds/binance";
 import { DataQualityTracker } from "./quality/data-quality";
+import { CandleAggregator } from "./candles/aggregator";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const USE_MOCK = process.env.USE_MOCK_FEED === "true";
@@ -29,25 +35,13 @@ const HEALTH_PORT = Number(process.env.HEALTH_PORT || 8081);
 const redis = createRedis(REDIS_URL);
 let redisReady = false;
 const quality = new DataQualityTracker();
+const candles = new CandleAggregator();
 
-const priceBuffer: number[] = [];
-const volumeBuffer: number[] = [];
-const MAX_BUFFER = 120;
 let lastPrice = 0;
 let feedConnected = false;
 let activeSource = USE_MOCK ? "mock" : "binance-public-ws";
 
-function updateBuffers(price: number, qty: number) {
-  priceBuffer.push(price);
-  volumeBuffer.push(qty);
-  if (priceBuffer.length > MAX_BUFFER) {
-    priceBuffer.shift();
-    volumeBuffer.shift();
-  }
-  lastPrice = price;
-}
-
-function deriveExtraFeatures(prices: number[], volumes: number[]) {
+function deriveExtraFeatures(prices: number[]) {
   if (prices.length < 3) {
     return { momentum_5: 0, range_position: 0.5 };
   }
@@ -102,17 +96,28 @@ async function publishSignal(signal: Signal) {
 function processTrade(trade: Trade) {
   quality.onTrade(trade.tradeTime, trade.receivedAt);
   persistTrade(trade).catch(() => {});
-  updateBuffers(trade.price, trade.quantity);
+  lastPrice = trade.price;
+
+  const { closed1m, closed15m } = candles.onTrade(trade);
+  if (closed1m) persistCandle(closed1m).catch(() => {});
+  if (closed15m) persistCandle(closed15m).catch(() => {});
+
+  // Primary series = 15m closes (includes forming bar)
+  const primaryCloses = candles.getPrimaryCloses();
+  const primaryCandles = candles.getPrimaryCandles();
+  // Synthetic volume series aligned to primary closes (use bar volumes)
+  const primaryVolumes = primaryCandles.map((c) => c.volume);
 
   const dataQuality = quality.getScore();
   const qSnap = quality.getSnapshot();
+
   const features = calculateMvpFeatures(
-    priceBuffer,
-    volumeBuffer,
+    primaryCloses,
+    primaryVolumes.length ? primaryVolumes : primaryCloses.map(() => 1),
     trade.tradeTime,
     dataQuality
   );
-  const extra = deriveExtraFeatures(priceBuffer, volumeBuffer);
+  const extra = deriveExtraFeatures(primaryCloses);
 
   const regime = detectRegime(
     features.values.realized_vol ?? 0.01,
@@ -131,8 +136,9 @@ function processTrade(trade: Trade) {
 
   const why = [
     "Baseline model is locked at NO TRADE until research promotion",
-    `Realized vol: ${((features.values.realized_vol ?? 0) * 100).toFixed(3)}%`,
-    `5-bar momentum: ${(extra.momentum_5 * 100).toFixed(3)}%`,
+    `Timeframe: ${PRIMARY_TIMEFRAME}`,
+    `Realized vol (${PRIMARY_TIMEFRAME}): ${((features.values.realized_vol ?? 0) * 100).toFixed(3)}%`,
+    `5-bar momentum (${PRIMARY_TIMEFRAME}): ${(extra.momentum_5 * 100).toFixed(3)}%`,
   ];
   const supporting: string[] = [];
   const contradictory: string[] = [];
@@ -146,6 +152,11 @@ function processTrade(trade: Trade) {
   }
   for (const r of qSnap.reasons) {
     contradictory.push(`quality:${r}`);
+  }
+  if (primaryCloses.length < 10) {
+    contradictory.push(
+      `Insufficient ${PRIMARY_TIMEFRAME} history (${primaryCloses.length} bars)`
+    );
   }
 
   const signalBlock = {
@@ -167,6 +178,15 @@ function processTrade(trade: Trade) {
     },
   };
 
+  const chartCandles = primaryCandles.slice(-48).map((c) => ({
+    openTime: c.openTime,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  }));
+
   const marketState: MarketState = {
     symbol: SYMBOL,
     price: lastPrice,
@@ -185,16 +205,13 @@ function processTrade(trade: Trade) {
       price: features.values.price ?? lastPrice,
     },
     signal: signalBlock,
-    priceHistory:
-      priceBuffer.length > 40
-        ? priceBuffer.filter((_, i) => i % 2 === 0).slice(-30)
-        : priceBuffer.slice(-30),
+    priceHistory: primaryCloses.slice(-48),
+    candles: chartCandles,
     source: activeSource,
-    timeframe: INTERIM_PRICE_HISTORY_TF,
+    timeframe: PRIMARY_TIMEFRAME,
   };
   publishMarketState(marketState);
 
-  // Baseline currently never emits direction; gate remains for future promotion
   if (inference.direction !== null && dataQuality >= DATA_QUALITY_THRESHOLD) {
     const signal: Signal = {
       signalId: randomUUID(),
@@ -206,7 +223,7 @@ function processTrade(trade: Trade) {
       modelVersion: inference.modelVersion,
       explanation: {
         what: `${inference.direction} bias`,
-        why: ["baseline model (research required for real signals)"],
+        why: [`baseline model on ${PRIMARY_TIMEFRAME}`],
         supporting: [],
         contradictory: qSnap.reasons.map((r) => `quality:${r}`),
         confidence: inference.confidence,
@@ -226,8 +243,9 @@ function processTrade(trade: Trade) {
 function startMockFeed() {
   console.log("[worker] MOCK feed active (USE_MOCK_FEED=true)");
   activeSource = "mock";
+  // Faster mock so 1m/15m bars form during local testing
   setInterval(() => {
-    const change = (Math.random() - 0.5) * 20;
+    const change = (Math.random() - 0.5) * 40;
     const price = Math.max(1000, (lastPrice || 65000) + change);
     const qty = Math.random() * 0.5 + 0.01;
     const now = new Date().toISOString();
@@ -241,7 +259,7 @@ function startMockFeed() {
       tradeTime: now,
       receivedAt: now,
     });
-  }, 800);
+  }, 400);
 }
 
 function startRealFeed(): BinanceTradeFeed {
@@ -268,6 +286,7 @@ function startHealthServer(_feed: BinanceTradeFeed | null) {
   const server = http.createServer((req, res) => {
     if (req.url === "/health" || req.url === "/healthz") {
       const snap = quality.getSnapshot();
+      const primary = candles.getPrimaryCloses();
       const body = {
         status: snap.score >= DATA_QUALITY_THRESHOLD ? "ok" : "degraded",
         feed: USE_MOCK ? "mock" : feedConnected ? "connected" : "disconnected",
@@ -276,6 +295,9 @@ function startHealthServer(_feed: BinanceTradeFeed | null) {
         symbol: SYMBOL,
         redisReady,
         source: activeSource,
+        timeframe: PRIMARY_TIMEFRAME,
+        primaryBars: primary.length,
+        forming15m: candles.getForming15m()?.openTime ?? null,
         timestamp: new Date().toISOString(),
       };
       res.writeHead(snap.score >= 0.5 ? 200 : 503, {
@@ -297,7 +319,20 @@ async function main() {
   console.log("[worker] BTC Scalping Intelligence Worker starting...");
   console.log(`[worker] Redis: ${REDIS_URL}`);
   console.log(`[worker] USE_MOCK_FEED=${USE_MOCK}`);
+  console.log(`[worker] Primary timeframe: ${PRIMARY_TIMEFRAME}`);
   await initPersistence();
+
+  // Reconstruct 15m from stored 1m on restart when DB is available
+  try {
+    const hist = await loadRecent1mCandles();
+    if (hist.length) {
+      candles.seedFrom1m(hist);
+      console.log(`[worker] Seeded ${hist.length} 1m bars → ${candles.getPrimaryCloses().length} 15m closes`);
+    }
+  } catch (err) {
+    console.warn("[worker] seed from DB skipped", (err as Error).message);
+  }
+
   redisReady = await safeConnect(redis);
   let feed: BinanceTradeFeed | null = null;
   if (USE_MOCK) startMockFeed();
