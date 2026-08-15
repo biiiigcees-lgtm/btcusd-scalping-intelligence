@@ -18,11 +18,12 @@ You are Principal Engineer on this repo. Non-executing quantitative research & d
 - **Web never recomputes** and never polls exchanges. `/api/v1/stream` is Redis-only; if Redis is down → degraded, fail loud.
 - Real `DataQualityTracker` score (latency + silence + reconnects) is what the UI displays — never a candle-count proxy.
 - Dashboard is gated by `DASHBOARD_SECRET` (cookie or `x-dashboard-secret` header) when that env var is set.
+- **Primary timeframe = 15m.** Trades → 1m → 15m. Features, regime, and signals evaluate on 15m closes. Every UI surface labels the TF.
 
 ## Stack
 
 - apps/web — Next.js 15 (UI + SSE relay)
-- apps/worker — Binance public WS / mock, features, regime, baseline ML, Redis, health :8081
+- apps/worker — Binance public WS / mock, candle aggregation, features, regime, baseline ML, Redis, health :8081
 - packages/shared, features, regime, ml, db, config
 - pnpm + Turborepo + docker-compose (Timescale + Redis)
 
@@ -38,9 +39,9 @@ curl -sS http://localhost:8081/health
 
 ## Priority order when continuing work
 
-1. Architecture single source of truth (done Phase 05 start)
-2. 15m native aggregation
-3. Real chart (lightweight-charts)
+1. ~~Architecture single source of truth~~ (done)
+2. ~~15m native aggregation~~ (done)
+3. Real chart (TradingView lightweight-charts, 15m candles)
 4. Lorentzian classifier + directional gauge
 5. Anticipation gauge
 6. Feed hot-standby + auto-retrain / circuit breaker
