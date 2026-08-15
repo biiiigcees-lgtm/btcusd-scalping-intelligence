@@ -1,16 +1,10 @@
 /**
- * Real Binance public WebSocket trade feed.
+ * Binance-family public WebSocket trade feed (global or .us).
  * Public market data only — no API keys.
- * Stream: wss://stream.binance.com:9443/ws/btcusdt@trade
  */
 import WebSocket from "ws";
-import type { Trade } from "@btc/shared";
-import { PRIMARY_EXCHANGE, SYMBOL } from "@btc/shared";
-
-const BINANCE_WS_BASE =
-  process.env.BINANCE_WS_URL || "wss://stream.binance.com:9443/ws";
-const STREAM = `${SYMBOL.toLowerCase()}@trade`;
-const FULL_URL = `${BINANCE_WS_BASE}/${STREAM}`;
+import type { Trade, Exchange } from "@btc/shared";
+import { SYMBOL } from "@btc/shared";
 
 interface BinanceTradeEvent {
   e: "trade";
@@ -29,9 +23,14 @@ export type OnStatusCallback = (status: {
   connected: boolean;
   reason?: string;
   reconnectAttempt?: number;
+  source: string;
 }) => void;
 
 export interface BinanceFeedOptions {
+  /** Full WS URL e.g. wss://stream.binance.com:9443/ws/btcusdt@trade */
+  url: string;
+  sourceLabel: string;
+  exchange?: Exchange;
   onTrade: OnTradeCallback;
   onStatus: OnStatusCallback;
   maxReconnectAttempts?: number;
@@ -48,15 +47,30 @@ export class BinanceTradeFeed {
   private readonly maxBackoffMs: number;
   private readonly onTrade: OnTradeCallback;
   private readonly onStatus: OnStatusCallback;
+  private readonly url: string;
+  private readonly sourceLabel: string;
+  private readonly exchange: Exchange;
   private lastMessageAt = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private connected = false;
 
   constructor(opts: BinanceFeedOptions) {
+    this.url = opts.url;
+    this.sourceLabel = opts.sourceLabel;
+    this.exchange = opts.exchange ?? "binance";
     this.onTrade = opts.onTrade;
     this.onStatus = opts.onStatus;
     this.maxReconnectAttempts = opts.maxReconnectAttempts ?? 50;
     this.initialBackoffMs = opts.initialBackoffMs ?? 1000;
     this.maxBackoffMs = opts.maxBackoffMs ?? 60_000;
+  }
+
+  getSourceLabel(): string {
+    return this.sourceLabel;
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 
   start() {
@@ -72,7 +86,12 @@ export class BinanceTradeFeed {
       this.ws.close();
       this.ws = null;
     }
-    this.onStatus({ connected: false, reason: "stopped" });
+    this.connected = false;
+    this.onStatus({
+      connected: false,
+      reason: "stopped",
+      source: this.sourceLabel,
+    });
   }
 
   getSilenceMs(): number {
@@ -82,20 +101,23 @@ export class BinanceTradeFeed {
 
   private connect() {
     if (this.stopped) return;
-    console.log(`[binance] Connecting to ${FULL_URL} (attempt ${this.reconnectAttempt + 1})`);
+    console.log(
+      `[${this.sourceLabel}] Connecting to ${this.url} (attempt ${this.reconnectAttempt + 1})`
+    );
     try {
-      this.ws = new WebSocket(FULL_URL);
+      this.ws = new WebSocket(this.url);
     } catch (err) {
-      console.error("[binance] WebSocket constructor failed", err);
+      console.error(`[${this.sourceLabel}] WebSocket constructor failed`, err);
       this.scheduleReconnect();
       return;
     }
 
     this.ws.on("open", () => {
-      console.log("[binance] Connected");
+      console.log(`[${this.sourceLabel}] Connected`);
       this.reconnectAttempt = 0;
       this.lastMessageAt = Date.now();
-      this.onStatus({ connected: true });
+      this.connected = true;
+      this.onStatus({ connected: true, source: this.sourceLabel });
       this.startHeartbeat();
     });
 
@@ -106,22 +128,31 @@ export class BinanceTradeFeed {
         const trade = this.mapToTrade(raw);
         if (trade) this.onTrade(trade);
       } catch (err) {
-        console.warn("[binance] Failed to parse message", err);
+        console.warn(`[${this.sourceLabel}] Failed to parse message`, err);
       }
     });
 
     this.ws.on("error", (err) => {
-      console.error("[binance] WebSocket error", err.message);
-      this.onStatus({ connected: false, reason: err.message });
+      console.error(`[${this.sourceLabel}] WebSocket error`, err.message);
+      this.connected = false;
+      this.onStatus({
+        connected: false,
+        reason: err.message,
+        source: this.sourceLabel,
+      });
     });
 
     this.ws.on("close", (code, reason) => {
-      console.warn(`[binance] Closed code=${code} reason=${reason.toString()}`);
+      console.warn(
+        `[${this.sourceLabel}] Closed code=${code} reason=${reason.toString()}`
+      );
       this.clearHeartbeat();
+      this.connected = false;
       this.onStatus({
         connected: false,
         reason: `close:${code}`,
         reconnectAttempt: this.reconnectAttempt,
+        source: this.sourceLabel,
       });
       this.ws = null;
       if (!this.stopped) this.scheduleReconnect();
@@ -129,7 +160,9 @@ export class BinanceTradeFeed {
   }
 
   private mapToTrade(raw: BinanceTradeEvent): Trade | null {
-    if (raw.e !== "trade" || raw.s !== SYMBOL) return null;
+    if (raw.e !== "trade") return null;
+    const sym = (raw.s || "").toUpperCase();
+    if (sym && sym !== SYMBOL) return null;
     const price = parseFloat(raw.p);
     const quantity = parseFloat(raw.q);
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
@@ -139,12 +172,11 @@ export class BinanceTradeFeed {
     const receivedAt = new Date().toISOString();
     const skewMs = Date.now() - raw.T;
     if (skewMs > 30_000 || skewMs < -5_000) {
-      console.warn(`[binance] Rejecting trade with skew ${skewMs}ms`);
       return null;
     }
     return {
-      tradeId: String(raw.t),
-      exchange: PRIMARY_EXCHANGE,
+      tradeId: `${this.sourceLabel}:${raw.t}`,
+      exchange: this.exchange,
       symbol: SYMBOL,
       price,
       quantity,
@@ -157,11 +189,12 @@ export class BinanceTradeFeed {
   private scheduleReconnect() {
     if (this.stopped) return;
     if (this.reconnectAttempt >= this.maxReconnectAttempts) {
-      console.error("[binance] Max reconnect attempts reached");
+      console.error(`[${this.sourceLabel}] Max reconnect attempts reached`);
       this.onStatus({
         connected: false,
         reason: "max_reconnects",
         reconnectAttempt: this.reconnectAttempt,
+        source: this.sourceLabel,
       });
       return;
     }
@@ -171,7 +204,9 @@ export class BinanceTradeFeed {
     );
     const jitter = backoff * (0.8 + Math.random() * 0.4);
     this.reconnectAttempt += 1;
-    console.log(`[binance] Reconnecting in ${Math.round(jitter)}ms (attempt ${this.reconnectAttempt})`);
+    console.log(
+      `[${this.sourceLabel}] Reconnecting in ${Math.round(jitter)}ms (attempt ${this.reconnectAttempt})`
+    );
     setTimeout(() => this.connect(), jitter);
   }
 
@@ -179,7 +214,7 @@ export class BinanceTradeFeed {
     this.clearHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       if (this.getSilenceMs() > 15_000) {
-        console.warn("[binance] Silence >15s — forcing reconnect");
+        console.warn(`[${this.sourceLabel}] Silence >15s — forcing reconnect`);
         this.ws?.terminate();
       }
     }, 5_000);

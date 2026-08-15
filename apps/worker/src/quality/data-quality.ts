@@ -5,6 +5,8 @@ export interface QualitySnapshot {
   latencyMs: number;
   silenceMs: number;
   reconnectsRecent: number;
+  sourceSwitchesRecent: number;
+  activeSource: string;
   reasons: string[];
   lastHealthyAt: string;
 }
@@ -13,8 +15,10 @@ export class DataQualityTracker {
   private score = 1.0;
   private lastHealthyAt = new Date().toISOString();
   private recentReconnects: number[] = [];
+  private recentSourceSwitches: number[] = [];
   private lastTradeReceivedAt = 0;
   private lastTradeLatencyMs = 0;
+  private activeSource = "unknown";
 
   onTrade(tradeTimeIso: string, receivedAtIso: string) {
     const tradeTs = Date.parse(tradeTimeIso);
@@ -33,6 +37,19 @@ export class DataQualityTracker {
     this.recompute();
   }
 
+  /** Call when FeedManager switches active source — flapping lowers quality */
+  onSourceSwitch(source: string, _reason?: string) {
+    this.activeSource = source;
+    this.recentSourceSwitches.push(Date.now());
+    const cutoff = Date.now() - 15 * 60_000;
+    this.recentSourceSwitches = this.recentSourceSwitches.filter((t) => t > cutoff);
+    this.recompute();
+  }
+
+  setActiveSource(source: string) {
+    this.activeSource = source;
+  }
+
   onSilence(silenceMs: number) {
     this.recompute(undefined, silenceMs);
   }
@@ -46,6 +63,8 @@ export class DataQualityTracker {
           ? Number.POSITIVE_INFINITY
           : Date.now() - this.lastTradeReceivedAt,
       reconnectsRecent: this.recentReconnects.length,
+      sourceSwitchesRecent: this.recentSourceSwitches.length,
+      activeSource: this.activeSource,
       reasons: this.buildReasons(),
       lastHealthyAt: this.lastHealthyAt,
     };
@@ -76,6 +95,10 @@ export class DataQualityTracker {
     if (this.recentReconnects.length >= 5) score -= 0.3;
     else if (this.recentReconnects.length >= 2) score -= 0.1;
 
+    // Flapping between sources is itself a quality defect
+    if (this.recentSourceSwitches.length >= 4) score -= 0.25;
+    else if (this.recentSourceSwitches.length >= 2) score -= 0.1;
+
     this.score = Math.max(0, Math.min(1, score));
     if (this.score >= DATA_QUALITY_THRESHOLD) {
       this.lastHealthyAt = new Date().toISOString();
@@ -86,8 +109,13 @@ export class DataQualityTracker {
     const snap = this.getSnapshot();
     const reasons: string[] = [];
     if (snap.latencyMs > 500) reasons.push(`latency:${snap.latencyMs}ms`);
-    if (snap.silenceMs > 10_000) reasons.push(`silence:${Math.round(snap.silenceMs / 1000)}s`);
-    if (snap.reconnectsRecent > 0) reasons.push(`reconnects:${snap.reconnectsRecent}`);
+    if (snap.silenceMs > 10_000)
+      reasons.push(`silence:${Math.round(snap.silenceMs / 1000)}s`);
+    if (snap.reconnectsRecent > 0)
+      reasons.push(`reconnects:${snap.reconnectsRecent}`);
+    if (snap.sourceSwitchesRecent > 0)
+      reasons.push(`source_switches:${snap.sourceSwitchesRecent}`);
+    if (snap.activeSource) reasons.push(`source:${snap.activeSource}`);
     return reasons;
   }
 }
