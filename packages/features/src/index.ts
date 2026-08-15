@@ -48,3 +48,6 @@ export function calculateMvpFeatures(
     quality,
   };
 }
+
+export { computeAnticipation } from "./anticipation";
+export type { AnticipationInputBar, AnticipationResult } from "./anticipation";

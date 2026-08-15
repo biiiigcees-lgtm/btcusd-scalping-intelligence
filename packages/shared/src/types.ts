@@ -30,13 +30,13 @@ export interface Candle {
   exchange: Exchange;
   symbol: string;
   interval: CandleInterval;
-  openTime: string; // ISO
+  openTime: string;
   open: number;
   high: number;
   low: number;
   close: number;
   volume: number;
-  closed: boolean; // true when bar is finalized
+  closed: boolean;
 }
 
 export interface FeatureVector {
@@ -86,7 +86,6 @@ export interface Signal {
   createdAt: string;
 }
 
-/** Snapshot of DataQualityTracker — real latency/silence/reconnect metrics */
 export interface QualitySnapshot {
   score: number;
   latencyMs: number;
@@ -96,10 +95,25 @@ export interface QualitySnapshot {
   lastHealthyAt: string;
 }
 
-/**
- * Full market snapshot published by the worker.
- * Single source of truth — web must never recompute regime/features/quality.
- */
+/** Independent "something big is coming" anticipation (not directional) */
+export interface AnticipationState {
+  /** 0–1 score */
+  score: number;
+  /** Human label */
+  label: "quiet" | "building" | "elevated" | "high";
+  components: {
+    squeeze: number;
+    volumeAccel: number;
+    rangeExtreme: number;
+  };
+  explanation: {
+    what: string;
+    why: string[];
+    supporting: string[];
+    contradictory: string[];
+  };
+}
+
 export interface MarketState {
   symbol: string;
   price: number;
@@ -113,7 +127,6 @@ export interface MarketState {
   qualitySnapshot?: QualitySnapshot;
   lastUpdate: string;
   systemHealth: SystemHealth;
-  /** Feature values from @btc/features (canonical) — computed on primary timeframe */
   features?: {
     return_1?: number;
     realized_vol?: number;
@@ -122,7 +135,6 @@ export interface MarketState {
     range_position?: number;
     price?: number;
   };
-  /** Baseline / promoted model output */
   signal?: {
     direction: SignalDirection;
     label: "NO TRADE" | "LONG" | "SHORT";
@@ -136,9 +148,9 @@ export interface MarketState {
       calibrationNote: string;
     };
   };
-  /** Recent closes for chart seed — primary timeframe */
+  /** Independent vol/breakout anticipation — never merge with directional signal */
+  anticipation?: AnticipationState;
   priceHistory?: number[];
-  /** Recent OHLCV bars (primary timeframe) for chart */
   candles?: Array<{
     openTime: string;
     open: number;
@@ -147,8 +159,6 @@ export interface MarketState {
     close: number;
     volume: number;
   }>;
-  /** Active feed source label */
   source?: string;
-  /** Explicit timeframe label — never leave the user guessing */
   timeframe?: string;
 }
