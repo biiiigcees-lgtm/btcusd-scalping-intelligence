@@ -30,8 +30,14 @@ export const HEALTH_PATHS = {
   web: "/api/v1/health",
 } as const;
 
-/** Primary evaluation timeframe (Phase 05+) — label everything explicitly */
+/** Primary evaluation timeframe — regime, features, ML, gauges */
 export const PRIMARY_TIMEFRAME = "15m" as const;
 
-/** Interim seed timeframe until 15m native aggregation lands */
-export const INTERIM_PRICE_HISTORY_TF = "1m" as const;
+/** Base aggregation timeframe — trades → 1m → 15m */
+export const BASE_TIMEFRAME = "1m" as const;
+
+/** How many primary-TF bars to keep in the in-memory / published history */
+export const PRIMARY_HISTORY_BARS = 96; // 24h of 15m
+
+/** How many 1m bars to keep for reconstruction */
+export const BASE_HISTORY_BARS = 1500; // ~25h

@@ -12,6 +12,9 @@ export type Regime =
 export type SignalDirection = "long" | "short" | null;
 export type SystemHealth = "healthy" | "degraded" | "critical";
 
+/** Supported candle intervals */
+export type CandleInterval = "1m" | "15m";
+
 export interface Trade {
   tradeId: string;
   exchange: Exchange;
@@ -21,6 +24,19 @@ export interface Trade {
   side: Side;
   tradeTime: string;
   receivedAt: string;
+}
+
+export interface Candle {
+  exchange: Exchange;
+  symbol: string;
+  interval: CandleInterval;
+  openTime: string; // ISO
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  closed: boolean; // true when bar is finalized
 }
 
 export interface FeatureVector {
@@ -97,7 +113,7 @@ export interface MarketState {
   qualitySnapshot?: QualitySnapshot;
   lastUpdate: string;
   systemHealth: SystemHealth;
-  /** Feature values from @btc/features (canonical) */
+  /** Feature values from @btc/features (canonical) — computed on primary timeframe */
   features?: {
     return_1?: number;
     realized_vol?: number;
@@ -120,8 +136,17 @@ export interface MarketState {
       calibrationNote: string;
     };
   };
-  /** Recent close prices for chart seed (1m until 15m native lands) */
+  /** Recent closes for chart seed — primary timeframe */
   priceHistory?: number[];
+  /** Recent OHLCV bars (primary timeframe) for chart */
+  candles?: Array<{
+    openTime: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>;
   /** Active feed source label */
   source?: string;
   /** Explicit timeframe label — never leave the user guessing */
