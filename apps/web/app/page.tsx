@@ -156,9 +156,14 @@ export default function HomePage() {
   const qSnap = state?.qualitySnapshot;
   const health = state?.systemHealth ?? "unknown";
   const signalLabel = state?.signal?.label ?? "NO TRADE";
+  const signalConf = state?.signal?.confidence ?? 0;
   const features = state?.features;
   const history = state?.priceHistory ?? state?.candles?.map((c) => c.close);
   const timeframe = state?.timeframe ?? "15m";
+
+  const isLong = signalLabel === "LONG";
+  const isShort = signalLabel === "SHORT";
+  const hasDirection = isLong || isShort;
 
   const priceClass =
     flash === "up"
@@ -178,6 +183,18 @@ export default function HomePage() {
         : qSnap?.reasons?.length
           ? qSnap.reasons.join(" · ")
           : "suppress directional";
+
+  const signalPillClass = isLong
+    ? "border-emerald-700/60 bg-emerald-950/50 text-emerald-300"
+    : isShort
+      ? "border-rose-700/60 bg-rose-950/50 text-rose-300"
+      : "border-zinc-700 bg-zinc-950 text-zinc-300";
+
+  const signalDotClass = isLong
+    ? "bg-emerald-400"
+    : isShort
+      ? "bg-rose-400"
+      : "bg-zinc-500";
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -237,7 +254,6 @@ export default function HomePage() {
           </div>
         ) : null}
 
-        {/* Hero price */}
         <section className="rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900/80 to-zinc-950 p-4 sm:p-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -296,7 +312,6 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Chart — full width */}
         <section className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-3 sm:p-4">
           <CandleChart
             candles={state?.candles}
@@ -325,7 +340,7 @@ export default function HomePage() {
           <MetricCard
             label="Model"
             value={state?.signal?.modelVersion ?? "baseline"}
-            sub={`${timeframe} · research locked`}
+            sub={`${timeframe} · gated KNN`}
           />
         </section>
 
@@ -372,18 +387,49 @@ export default function HomePage() {
             </div>
           </div>
 
+          {/* Directional signal gauge */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5 flex flex-col">
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
-              Signal · {timeframe}
+              Directional signal · {timeframe}
             </h2>
             <div className="flex-1 flex flex-col items-center justify-center text-center py-4">
-              <div className="inline-flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-950 px-4 py-1.5 text-sm font-medium text-zinc-300">
-                <span className="h-2 w-2 rounded-full bg-zinc-500" />
+              <div
+                className={`inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm font-medium ${signalPillClass}`}
+              >
+                <span className={`h-2 w-2 rounded-full ${signalDotClass}`} />
                 {signalLabel}
               </div>
+
+              {/* Confidence gauge */}
+              <div className="w-full max-w-xs mt-4">
+                <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
+                  <span>Wilson confidence</span>
+                  <span className="tabular-nums">
+                    {hasDirection ? `${(signalConf * 100).toFixed(1)}%` : "—"}
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      isLong
+                        ? "bg-emerald-500"
+                        : isShort
+                          ? "bg-rose-500"
+                          : "bg-zinc-600"
+                    }`}
+                    style={{
+                      width: `${Math.min(100, Math.max(0, signalConf * 100))}%`,
+                    }}
+                  />
+                </div>
+                <div className="text-[10px] text-zinc-600 mt-1 text-left">
+                  Gate ≥ 68% · quality ≥ 85% · cooldown 30m
+                </div>
+              </div>
+
               <p className="text-zinc-400 text-sm mt-4 max-w-sm leading-relaxed">
                 {state?.signal?.explanation?.what ??
-                  "Signals must earn the right to appear. Baseline emits no directional bias."}
+                  "Signals must earn the right to appear. Default = NO TRADE."}
               </p>
               {state?.signal?.explanation?.why?.length ? (
                 <ul className="mt-4 text-left w-full space-y-1.5">
@@ -424,7 +470,7 @@ export default function HomePage() {
         </section>
 
         <footer className="pt-2 pb-6 text-center text-[11px] text-zinc-700">
-          Foundation 00–04 locked · Primary TF {timeframe} · Public data only · No execution · Worker = single source of truth
+          Foundation 00–04 locked · Primary TF {timeframe} · Lorentzian KNN gated · No execution
         </footer>
       </div>
     </main>
