@@ -3,5 +3,7 @@
   "framework": "nextjs",
   "installCommand": "pnpm install --no-frozen-lockfile",
   "buildCommand": "pnpm --filter @btc/web build",
-  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ./apps/web ./packages/shared ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./vercel.json ./apps/web/vercel.json"
+  "outputDirectory": "apps/web/.next",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ./apps/web ./packages/shared ./packages/features ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ./vercel.json",
+  "regions": ["iad1"]
 }
