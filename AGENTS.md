@@ -6,31 +6,33 @@ You are Principal Engineer on this repo. Non-executing quantitative research & d
 
 - Never execute trades or add broker/exchange private keys
 - Default state = NO TRADE
-- data_quality < 0.85 ⇒ suppress directional signals **and** anticipation display score
-- Baseline model must not emit long/short until research promotion
+- data_quality < 0.85 ⇒ suppress directional signals and anticipation score
+- Circuit breaker open ⇒ NO TRADE only (surface clearly in UI/explanations)
 - Public market data only for live feeds
-- Smallest correct change; no drive-by refactors
+- Directional signal and anticipation gauge are independent — never merge them
 - Human remains final decision maker
-- Directional signal and anticipation gauge are **independent** — never merge them
+- Smallest correct change; no drive-by refactors
 
 ## Architecture (Phase 05+)
 
-- **Worker is the single source of truth.** Publishes full `MarketState` to Redis.
-- **Web never recomputes** / never polls exchanges. Redis-only SSE; fail loud if degraded.
-- **Primary TF = 15m.** Chart = lightweight-charts candlesticks.
-- **Directional** = `@btc/ml-lorentzian` gated KNN (Wilson ≥ 68%, quality, cooldown).
-- **Anticipation** = squeeze + volume accel + range extreme (not direction).
-- `@btc/ml` baseline remains safe NO TRADE fallback.
+- **Worker** = single source of truth → Redis `stream:market_state`
+- **Web** = Redis SSE relay only; degraded if Redis down
+- **Primary TF** = 15m (trades → 1m → 15m)
+- **Chart** = lightweight-charts 15m candles
+- **Directional** = `@btc/ml-lorentzian` (Wilson ≥ 68%, quality, cooldown)
+- **Anticipation** = squeeze + volume accel + range extreme
+- **Feeds** = Binance global primary + Binance.US hot standby; flapping penalized
+- **Circuit breaker** = live hit-rate drawdown → NO TRADE; promote only if held-out beats live
 
-## Priority order when continuing work
+## Priority order
 
 1. ~~Architecture single source of truth~~
 2. ~~15m native aggregation~~
-3. ~~Real chart (lightweight-charts)~~
-4. ~~Lorentzian classifier + directional gauge~~
+3. ~~Real chart~~
+4. ~~Lorentzian + directional gauge~~
 5. ~~Anticipation gauge~~
-6. Feed hot-standby + auto-retrain / circuit breaker
-7. Notifications (confirm scope)
+6. ~~Feed hot-standby + circuit breaker / promotion gate~~
+7. Notifications (confirm scope before building)
 
 ## Quick verify
 
@@ -39,6 +41,5 @@ pnpm install
 docker compose up -d
 USE_MOCK_FEED=true pnpm --filter @btc/worker dev
 pnpm --filter @btc/web dev
-pnpm --filter @btc/features test
-pnpm --filter @btc/ml-lorentzian test
+curl -sS http://localhost:8081/health | jq .
 ```

@@ -12,7 +12,6 @@ export type Regime =
 export type SignalDirection = "long" | "short" | null;
 export type SystemHealth = "healthy" | "degraded" | "critical";
 
-/** Supported candle intervals */
 export type CandleInterval = "1m" | "15m";
 
 export interface Trade {
@@ -91,15 +90,14 @@ export interface QualitySnapshot {
   latencyMs: number;
   silenceMs: number;
   reconnectsRecent: number;
+  sourceSwitchesRecent?: number;
+  activeSource?: string;
   reasons: string[];
   lastHealthyAt: string;
 }
 
-/** Independent "something big is coming" anticipation (not directional) */
 export interface AnticipationState {
-  /** 0–1 score */
   score: number;
-  /** Human label */
   label: "quiet" | "building" | "elevated" | "high";
   components: {
     squeeze: number;
@@ -148,7 +146,6 @@ export interface MarketState {
       calibrationNote: string;
     };
   };
-  /** Independent vol/breakout anticipation — never merge with directional signal */
   anticipation?: AnticipationState;
   priceHistory?: number[];
   candles?: Array<{
