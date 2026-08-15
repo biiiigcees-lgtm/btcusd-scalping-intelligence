@@ -10,6 +10,15 @@ type Regime =
   | "low_liquidity"
   | "unknown";
 
+type QualitySnapshot = {
+  score?: number;
+  latencyMs?: number;
+  silenceMs?: number;
+  reconnectsRecent?: number;
+  reasons?: string[];
+  lastHealthyAt?: string;
+};
+
 type MarketState = {
   symbol?: string;
   price?: number;
@@ -18,8 +27,9 @@ type MarketState = {
   low24h?: number;
   volume24h?: number;
   quoteVolume24h?: number;
-  regime?: { regime?: Regime; confidence?: number };
+  regime?: { regime?: Regime; confidence?: number; timestamp?: string };
   dataQuality?: number;
+  qualitySnapshot?: QualitySnapshot;
   systemHealth?: string;
   lastUpdate?: string;
   features?: {
@@ -42,8 +52,10 @@ type MarketState = {
       calibrationNote?: string;
     };
   };
-  sparkline?: number[];
+  priceHistory?: number[];
+  sparkline?: number[]; // legacy alias
   source?: string;
+  timeframe?: string;
 };
 
 function fmtPrice(n?: number) {
@@ -84,7 +96,7 @@ function Sparkline({ values }: { values?: number[] }) {
   if (!path) {
     return (
       <div className="h-14 flex items-center text-zinc-600 text-xs">
-        Waiting for price history…
+        Waiting for price history from worker…
       </div>
     );
   }
@@ -134,6 +146,7 @@ export default function HomePage() {
         });
         setError(null);
         setConnected(true);
+        setMode("worker-stream");
       } catch {
         /* ignore */
       }
@@ -143,8 +156,9 @@ export default function HomePage() {
       try {
         const s = JSON.parse(ev.data);
         if (s.mode) setMode(s.mode);
-        if (s.error) setError(s.error);
-        else if (s.note && s.mode === "direct-binance") setError(null);
+        if (s.error || s.message) setError(s.error || s.message);
+        else if (s.note && s.mode === "degraded") setError(s.note);
+        else if (s.mode === "worker-stream") setError(null);
       } catch {
         /* ignore */
       }
@@ -162,9 +176,12 @@ export default function HomePage() {
   const change = state?.change24h;
   const regime = state?.regime?.regime ?? "unknown";
   const quality = state?.dataQuality;
+  const qSnap = state?.qualitySnapshot;
   const health = state?.systemHealth ?? "unknown";
   const signalLabel = state?.signal?.label ?? "NO TRADE";
   const features = state?.features;
+  const history = state?.priceHistory ?? state?.sparkline;
+  const timeframe = state?.timeframe ?? "1m";
 
   const priceClass =
     flash === "up"
@@ -175,6 +192,15 @@ export default function HomePage() {
 
   const changeClass =
     change == null ? "text-zinc-500" : change >= 0 ? "text-emerald-400" : "text-rose-400";
+
+  const qualitySub =
+    quality == null
+      ? undefined
+      : quality >= 0.85
+        ? "above threshold"
+        : qSnap?.reasons?.length
+          ? qSnap.reasons.join(" · ")
+          : "suppress directional";
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -195,23 +221,35 @@ export default function HomePage() {
           <div className="flex flex-col items-end gap-2">
             <div
               className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                connected
+                connected && mode === "worker-stream"
                   ? "border-emerald-900/60 bg-emerald-950/40 text-emerald-400"
-                  : "border-zinc-700 bg-zinc-900 text-zinc-400"
+                  : mode === "degraded"
+                    ? "border-amber-900/60 bg-amber-950/40 text-amber-400"
+                    : "border-zinc-700 bg-zinc-900 text-zinc-400"
               }`}
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
-                  connected ? "bg-emerald-400 animate-pulse" : "bg-zinc-500"
+                  connected && mode === "worker-stream"
+                    ? "bg-emerald-400 animate-pulse"
+                    : mode === "degraded"
+                      ? "bg-amber-400"
+                      : "bg-zinc-500"
                 }`}
               />
-              {connected ? "Live" : "Offline"}
+              {mode === "worker-stream"
+                ? "Live"
+                : mode === "degraded"
+                  ? "Degraded"
+                  : connected
+                    ? "Connected"
+                    : "Offline"}
             </div>
             <span className="text-[10px] text-zinc-600 uppercase tracking-wider">
-              {mode === "direct-binance"
-                ? "Binance public"
-                : mode === "worker-stream"
-                  ? "Worker stream"
+              {mode === "worker-stream"
+                ? "Worker stream"
+                : mode === "degraded"
+                  ? "Redis unavailable"
                   : mode}
             </span>
           </div>
@@ -245,10 +283,16 @@ export default function HomePage() {
               </div>
             </div>
             <div className="w-full sm:w-64 opacity-90">
-              <Sparkline values={state?.sparkline} />
+              <Sparkline values={history} />
               <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
-                <span>60 × 1m</span>
-                <span>{state?.lastUpdate ? new Date(state.lastUpdate).toLocaleTimeString() : "—"}</span>
+                <span>
+                  seed · {timeframe} (15m native pending)
+                </span>
+                <span>
+                  {state?.lastUpdate
+                    ? new Date(state.lastUpdate).toLocaleTimeString()
+                    : "—"}
+                </span>
               </div>
             </div>
           </div>
@@ -295,7 +339,7 @@ export default function HomePage() {
           <MetricCard
             label="Data quality"
             value={quality != null ? `${(quality * 100).toFixed(0)}%` : "—"}
-            sub={quality != null && quality >= 0.85 ? "above threshold" : "suppress if low"}
+            sub={qualitySub}
           />
           <MetricCard label="System" value={health} sub={state?.source ?? "—"} />
           <MetricCard
@@ -309,11 +353,11 @@ export default function HomePage() {
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
-              Bot analysis
+              Bot analysis · {timeframe}
             </h2>
             <div className="space-y-3">
               <FeatureRow
-                label="1m return"
+                label="1-bar return"
                 value={features?.return_1 != null ? fmtPct(features.return_1 * 100) : "—"}
               />
               <FeatureRow
@@ -401,7 +445,7 @@ export default function HomePage() {
         </section>
 
         <footer className="pt-2 pb-6 text-center text-[11px] text-zinc-700">
-          Foundation 00–04 locked · Public market data only · No execution path
+          Foundation 00–04 locked · Public market data only · No execution path · Worker is single source of truth
         </footer>
       </div>
     </main>
