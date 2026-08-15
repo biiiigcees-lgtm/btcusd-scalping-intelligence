@@ -18,11 +18,13 @@
     "@btc/ml-lorentzian": "workspace:*",
     "@btc/db": "workspace:*",
     "ioredis": "^5.4.1",
+    "web-push": "^3.6.7",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
+    "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.12",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"

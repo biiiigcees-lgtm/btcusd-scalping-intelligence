@@ -24,6 +24,9 @@ export const REDIS_STREAMS = {
   marketState: "stream:market_state",
 } as const;
 
+/** Redis key for web-push subscription JSON blobs */
+export const REDIS_PUSH_SUBS_KEY = "push:subscriptions";
+
 /** Health check paths */
 export const HEALTH_PATHS = {
   worker: "/health",
@@ -41,3 +44,6 @@ export const PRIMARY_HISTORY_BARS = 96; // 24h of 15m
 
 /** How many 1m bars to keep for reconstruction */
 export const BASE_HISTORY_BARS = 1500; // ~25h
+
+/** Anticipation score at/above which a push may fire (if opted in) */
+export const PUSH_ANTICIPATION_THRESHOLD = 0.75;
