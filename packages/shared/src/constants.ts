@@ -29,3 +29,9 @@ export const HEALTH_PATHS = {
   worker: "/health",
   web: "/api/v1/health",
 } as const;
+
+/** Primary evaluation timeframe (Phase 05+) — label everything explicitly */
+export const PRIMARY_TIMEFRAME = "15m" as const;
+
+/** Interim seed timeframe until 15m native aggregation lands */
+export const INTERIM_PRICE_HISTORY_TF = "1m" as const;
