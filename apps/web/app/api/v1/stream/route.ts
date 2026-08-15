@@ -1,12 +1,16 @@
 import { Redis } from "ioredis";
 import { REDIS_STREAMS } from "@btc/shared";
-import { fetchLiveMarket } from "@/lib/market-engine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
+/**
+ * SSE relay — Redis only.
+ * Worker is the single source of truth. No per-client exchange polling.
+ * If Redis is unreachable we fail loud with a degraded status event.
+ */
 export async function GET() {
   const encoder = new TextEncoder();
   let closed = false;
@@ -32,7 +36,6 @@ export async function GET() {
         timestamp: new Date().toISOString(),
       });
 
-      // Prefer Redis worker stream when available
       try {
         redis = new Redis(REDIS_URL, {
           maxRetriesPerRequest: 1,
@@ -47,45 +50,59 @@ export async function GET() {
       }
 
       if (!redis) {
+        // Fail loud — no silent direct-exchange fallback (split-brain ban)
         send("status", {
           redis: "unavailable",
-          mode: "direct-binance",
-          systemHealth: "healthy",
-          note: "Live public Binance feed active (worker/Redis optional)",
+          mode: "degraded",
+          systemHealth: "degraded",
+          note: "Worker/Redis unreachable. Market state unavailable. No direct exchange polling.",
         });
 
-        const pushLive = async () => {
-          if (closed) return;
-          try {
-            const snap = await fetchLiveMarket();
-            send("market_state", snap);
-          } catch (err) {
-            send("status", {
-              redis: "unavailable",
-              mode: "direct-binance",
-              error: (err as Error).message,
-            });
-          }
-        };
-
-        await pushLive();
-        const iv = setInterval(pushLive, 4000);
         const hb = setInterval(() => {
           if (closed) {
-            clearInterval(iv);
             clearInterval(hb);
             return;
           }
-          send("heartbeat", { ts: new Date().toISOString() });
-        }, 15000);
+          send("status", {
+            redis: "unavailable",
+            mode: "degraded",
+            systemHealth: "degraded",
+            note: "Still waiting for Redis / worker",
+            ts: new Date().toISOString(),
+          });
+        }, 10_000);
         return;
       }
 
       send("status", {
         redis: "connected",
         mode: "worker-stream",
-        note: "Reading market_state from Redis worker",
+        note: "Reading market_state from Redis worker — single source of truth",
       });
+
+      // Try to seed with the most recent message if stream has history
+      try {
+        const latest = await redis.xrevrange(
+          REDIS_STREAMS.marketState,
+          "+",
+          "-",
+          "COUNT",
+          1
+        );
+        if (latest?.length) {
+          const fields = latest[0][1];
+          const payloadIdx = fields.indexOf("payload");
+          if (payloadIdx >= 0 && fields[payloadIdx + 1]) {
+            try {
+              send("market_state", JSON.parse(fields[payloadIdx + 1]));
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      } catch {
+        /* ignore seed failure */
+      }
 
       let lastId = "$";
       const poll = async () => {
@@ -116,7 +133,12 @@ export async function GET() {
             }
           }
         } catch (err) {
-          send("status", { redis: "error", message: (err as Error).message });
+          send("status", {
+            redis: "error",
+            mode: "degraded",
+            systemHealth: "degraded",
+            message: (err as Error).message,
+          });
         }
         if (!closed) setTimeout(poll, 50);
       };
