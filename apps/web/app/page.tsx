@@ -53,7 +53,14 @@ type MarketState = {
     };
   };
   priceHistory?: number[];
-  sparkline?: number[]; // legacy alias
+  candles?: Array<{
+    openTime: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>;
   source?: string;
   timeframe?: string;
 };
@@ -96,7 +103,7 @@ function Sparkline({ values }: { values?: number[] }) {
   if (!path) {
     return (
       <div className="h-14 flex items-center text-zinc-600 text-xs">
-        Waiting for price history from worker…
+        Waiting for {"15m"} history from worker…
       </div>
     );
   }
@@ -180,8 +187,10 @@ export default function HomePage() {
   const health = state?.systemHealth ?? "unknown";
   const signalLabel = state?.signal?.label ?? "NO TRADE";
   const features = state?.features;
-  const history = state?.priceHistory ?? state?.sparkline;
-  const timeframe = state?.timeframe ?? "1m";
+  const history =
+    state?.priceHistory ??
+    state?.candles?.map((c) => c.close);
+  const timeframe = state?.timeframe ?? "15m";
 
   const priceClass =
     flash === "up"
@@ -205,11 +214,10 @@ export default function HomePage() {
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="max-w-6xl mx-auto px-4 py-5 sm:p-6 space-y-5">
-        {/* Header */}
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 pb-4">
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mb-1">
-              Decision support · non-executing
+              Decision support · non-executing · {timeframe} primary
             </p>
             <h1 className="text-lg sm:text-2xl font-semibold tracking-tight leading-snug">
               BTCUSD AI Scalping Intelligence
@@ -261,7 +269,6 @@ export default function HomePage() {
           </div>
         ) : null}
 
-        {/* Hero price */}
         <section className="rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900/80 to-zinc-950 p-4 sm:p-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -286,7 +293,7 @@ export default function HomePage() {
               <Sparkline values={history} />
               <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
                 <span>
-                  seed · {timeframe} (15m native pending)
+                  {timeframe} closes · {history?.length ?? 0} bars
                 </span>
                 <span>
                   {state?.lastUpdate
@@ -325,10 +332,9 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Metric cards */}
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <MetricCard
-            label="Regime"
+            label={`Regime · ${timeframe}`}
             value={regimeLabel(regime)}
             sub={
               state?.regime?.confidence != null
@@ -345,11 +351,10 @@ export default function HomePage() {
           <MetricCard
             label="Model"
             value={state?.signal?.modelVersion ?? "baseline"}
-            sub="research locked"
+            sub={`${timeframe} · research locked`}
           />
         </section>
 
-        {/* Analysis + Signal */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
@@ -357,11 +362,11 @@ export default function HomePage() {
             </h2>
             <div className="space-y-3">
               <FeatureRow
-                label="1-bar return"
+                label={`1-bar return (${timeframe})`}
                 value={features?.return_1 != null ? fmtPct(features.return_1 * 100) : "—"}
               />
               <FeatureRow
-                label="Realized vol"
+                label={`Realized vol (${timeframe})`}
                 value={
                   features?.realized_vol != null
                     ? `${(features.realized_vol * 100).toFixed(3)}%`
@@ -369,7 +374,7 @@ export default function HomePage() {
                 }
               />
               <FeatureRow
-                label="5-bar momentum"
+                label={`5-bar momentum (${timeframe})`}
                 value={
                   features?.momentum_5 != null ? fmtPct(features.momentum_5 * 100) : "—"
                 }
@@ -395,7 +400,7 @@ export default function HomePage() {
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5 flex flex-col">
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
-              Signal
+              Signal · {timeframe}
             </h2>
             <div className="flex-1 flex flex-col items-center justify-center text-center py-4">
               <div className="inline-flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-950 px-4 py-1.5 text-sm font-medium text-zinc-300">
@@ -445,7 +450,7 @@ export default function HomePage() {
         </section>
 
         <footer className="pt-2 pb-6 text-center text-[11px] text-zinc-700">
-          Foundation 00–04 locked · Public market data only · No execution path · Worker is single source of truth
+          Foundation 00–04 locked · Primary TF {timeframe} · Public data only · No execution · Worker = single source of truth
         </footer>
       </div>
     </main>
