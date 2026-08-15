@@ -77,18 +77,16 @@ export async function loadRecent1mCandles(limit = 1500): Promise<Candle[]> {
   if (!enabled || !db) return [];
   try {
     const { candles } = await import("@btc/db");
-    const { desc } = await import("drizzle-orm");
+    const { desc, eq, and } = await import("drizzle-orm");
     const d = db as any;
     const rows = await d
       .select()
       .from(candles)
-      .where(/* interval = 1m handled in filter below */)
+      .where(and(eq(candles.interval, "1m"), eq(candles.symbol, "BTCUSDT")))
       .orderBy(desc(candles.openTime))
       .limit(limit);
 
-    // Filter 1m in JS to avoid extra drizzle imports complexity
     return (rows as any[])
-      .filter((r) => r.interval === "1m")
       .reverse()
       .map((r) => ({
         exchange: r.exchange,

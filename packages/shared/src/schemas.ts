@@ -12,6 +12,7 @@ export const RegimeSchema = z.enum([
 ]);
 export const SignalDirectionSchema = z.enum(["long", "short"]).nullable();
 export const SystemHealthSchema = z.enum(["healthy", "degraded", "critical"]);
+export const CandleIntervalSchema = z.enum(["1m", "15m"]);
 
 export const TradeSchema = z.object({
   tradeId: z.string(),
@@ -22,6 +23,19 @@ export const TradeSchema = z.object({
   side: SideSchema,
   tradeTime: z.string().datetime(),
   receivedAt: z.string().datetime(),
+});
+
+export const CandleSchema = z.object({
+  exchange: ExchangeSchema,
+  symbol: z.string(),
+  interval: CandleIntervalSchema,
+  openTime: z.string().datetime(),
+  open: z.number(),
+  high: z.number(),
+  low: z.number(),
+  close: z.number(),
+  volume: z.number(),
+  closed: z.boolean(),
 });
 
 export const FeatureVectorSchema = z.object({
@@ -84,6 +98,18 @@ export const MarketStateSchema = z.object({
     })
     .optional(),
   priceHistory: z.array(z.number()).optional(),
+  candles: z
+    .array(
+      z.object({
+        openTime: z.string(),
+        open: z.number(),
+        high: z.number(),
+        low: z.number(),
+        close: z.number(),
+        volume: z.number(),
+      })
+    )
+    .optional(),
   source: z.string().optional(),
   timeframe: z.string().optional(),
 });
