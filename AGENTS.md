@@ -7,39 +7,42 @@ You are Principal Engineer on this repo. Non-executing quantitative research & d
 - Never execute trades or add broker/exchange private keys
 - Default state = NO TRADE
 - data_quality < 0.85 ⇒ suppress directional signals and anticipation score
-- Circuit breaker open ⇒ NO TRADE only (surface clearly in UI/explanations)
-- Public market data only for live feeds
-- Directional signal and anticipation gauge are independent — never merge them
+- Circuit breaker open ⇒ NO TRADE only
+- Web push is opt-in and uses the **same gates** as the UI (no spam)
+- Public market data only
+- Direction ≠ anticipation — never merge them
 - Human remains final decision maker
-- Smallest correct change; no drive-by refactors
 
-## Architecture (Phase 05+)
+## Architecture
 
-- **Worker** = single source of truth → Redis `stream:market_state`
-- **Web** = Redis SSE relay only; degraded if Redis down
-- **Primary TF** = 15m (trades → 1m → 15m)
-- **Chart** = lightweight-charts 15m candles
-- **Directional** = `@btc/ml-lorentzian` (Wilson ≥ 68%, quality, cooldown)
-- **Anticipation** = squeeze + volume accel + range extreme
-- **Feeds** = Binance global primary + Binance.US hot standby; flapping penalized
-- **Circuit breaker** = live hit-rate drawdown → NO TRADE; promote only if held-out beats live
+- Worker = single source of truth → Redis streams
+- Web = Redis SSE + opt-in Web Push subscribe API
+- Primary TF 15m · lightweight-charts · Lorentzian KNN · anticipation
+- Feeds: Binance global + Binance.US hot standby
+- Circuit breaker + promotion gate
 
-## Priority order
+## Web push setup
 
-1. ~~Architecture single source of truth~~
-2. ~~15m native aggregation~~
-3. ~~Real chart~~
-4. ~~Lorentzian + directional gauge~~
-5. ~~Anticipation gauge~~
-6. ~~Feed hot-standby + circuit breaker / promotion gate~~
-7. Notifications (confirm scope before building)
+```bash
+npx web-push generate-vapid-keys
+# Set in env (web + worker):
+# VAPID_PUBLIC_KEY=...
+# VAPID_PRIVATE_KEY=...
+# VAPID_SUBJECT=mailto:you@example.com
+# NEXT_PUBLIC_VAPID_PUBLIC_KEY=<same as VAPID_PUBLIC_KEY>
+```
+
+Push fires only on gated LONG/SHORT or anticipation ≥ 0.75 (edge-triggered).
+
+## Priority order — all Phase 05+ items complete
+
+1. ~~Architecture~~ 2. ~~15m~~ 3. ~~Chart~~ 4. ~~Lorentzian~~
+5. ~~Anticipation~~ 6. ~~Hot-standby + circuit~~ 7. ~~Web push~~
 
 ## Quick verify
 
 ```bash
-pnpm install
-docker compose up -d
+pnpm install && docker compose up -d
 USE_MOCK_FEED=true pnpm --filter @btc/worker dev
 pnpm --filter @btc/web dev
-curl -sS http://localhost:8081/health | jq .
 ```

@@ -1,7 +1,7 @@
 /**
  * Market Data + Feature + Inference Worker
  * Single source of truth for market_state published to Redis.
- * Primary TF = 15m. Hot-standby feeds. Lorentzian + anticipation. Circuit breaker.
+ * Primary TF = 15m. Hot-standby. Lorentzian + anticipation. Circuit breaker. Web push.
  */
 import { createRedis, safeConnect } from "./redis";
 import {
@@ -18,6 +18,7 @@ import {
   DATA_QUALITY_THRESHOLD,
   PRIMARY_EXCHANGE,
   PRIMARY_TIMEFRAME,
+  PUSH_ANTICIPATION_THRESHOLD,
 } from "@btc/shared";
 import { calculateMvpFeatures, computeAnticipation } from "@btc/features";
 import { detectRegime } from "@btc/regime";
@@ -35,6 +36,11 @@ import { FeedManager } from "./feeds/manager";
 import { DataQualityTracker } from "./quality/data-quality";
 import { CandleAggregator } from "./candles/aggregator";
 import { CircuitBreaker } from "./circuit-breaker";
+import {
+  initPush,
+  notifyDirectional,
+  notifyAnticipation,
+} from "./push";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const USE_MOCK = process.env.USE_MOCK_FEED === "true";
@@ -52,6 +58,8 @@ let feedConnected = false;
 let activeSource = USE_MOCK ? "mock" : "binance-global";
 let lastGated: GatedSignal | null = null;
 let feedManager: FeedManager | null = null;
+/** Dedupe anticipation pushes — only when crossing into high */
+let lastAnticipationNotified = false;
 
 function deriveExtraFeatures(prices: number[]) {
   if (prices.length < 3) {
@@ -86,7 +94,6 @@ function runLorentzian(dataQuality: number): GatedSignal {
   const inference = lorentzian.infer();
   let gated = gateInference(inference, dataQuality);
 
-  // Circuit breaker overrides any directional output
   if (circuit.shouldSuppressDirectional() && gated.direction !== null) {
     const st = circuit.getState();
     gated = {
@@ -166,7 +173,7 @@ function processTrade(trade: Trade, source?: string) {
     const dataQuality = quality.getScore();
     lastGated = runLorentzian(dataQuality);
 
-    if (lastGated.direction !== null) {
+    if (lastGated.direction !== null && lastGated.label !== "NO TRADE") {
       const signal: Signal = {
         signalId: randomUUID(),
         timestamp: trade.tradeTime,
@@ -191,6 +198,14 @@ function processTrade(trade: Trade, source?: string) {
         createdAt: new Date().toISOString(),
       };
       publishSignal(signal);
+      // Same gates as UI — only fire after direction earned
+      notifyDirectional(
+        redis,
+        redisReady,
+        lastGated.label as "LONG" | "SHORT",
+        lastGated.confidence,
+        lastPrice
+      ).catch(() => {});
     }
   }
 
@@ -242,6 +257,22 @@ function processTrade(trade: Trade, source?: string) {
         }
       : anticipationRaw;
 
+  // Edge-trigger high anticipation push (no spam while elevated)
+  if (
+    anticipation.score >= PUSH_ANTICIPATION_THRESHOLD &&
+    !lastAnticipationNotified
+  ) {
+    lastAnticipationNotified = true;
+    notifyAnticipation(
+      redis,
+      redisReady,
+      anticipation.score,
+      anticipation.label
+    ).catch(() => {});
+  } else if (anticipation.score < PUSH_ANTICIPATION_THRESHOLD * 0.85) {
+    lastAnticipationNotified = false;
+  }
+
   let signalBlock: MarketState["signal"];
   if (lastGated) {
     signalBlock = {
@@ -275,7 +306,6 @@ function processTrade(trade: Trade, source?: string) {
     };
   }
 
-  // Surface circuit state in explanation when open
   if (circuit.shouldSuppressDirectional() && signalBlock) {
     const st = circuit.getState();
     signalBlock = {
@@ -286,10 +316,7 @@ function processTrade(trade: Trade, source?: string) {
       explanation: {
         ...signalBlock.explanation,
         what: "NO TRADE — circuit breaker open",
-        contradictory: [
-          ...signalBlock.explanation.contradictory,
-          st.reason,
-        ],
+        contradictory: [...signalBlock.explanation.contradictory, st.reason],
       },
     };
   }
@@ -435,8 +462,9 @@ async function main() {
   console.log(`[worker] USE_MOCK_FEED=${USE_MOCK}`);
   console.log(`[worker] Primary timeframe: ${PRIMARY_TIMEFRAME}`);
   console.log(
-    "[worker] Classifier: Lorentzian KNN · anticipation · hot-standby · circuit breaker"
+    "[worker] Lorentzian · anticipation · hot-standby · circuit · web-push"
   );
+  initPush();
   await initPersistence();
 
   try {

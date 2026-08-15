@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import { PushToggle } from "@/components/PushToggle";
 
 const CandleChart = dynamic(
   () => import("@/components/CandleChart").then((m) => m.CandleChart),
@@ -30,6 +31,7 @@ type QualitySnapshot = {
   reconnectsRecent?: number;
   reasons?: string[];
   lastHealthyAt?: string;
+  activeSource?: string;
 };
 
 type AnticipationState = {
@@ -267,6 +269,7 @@ export default function HomePage() {
                     ? "Connected"
                     : "Offline"}
             </div>
+            <PushToggle />
             <span className="text-[10px] text-zinc-600 uppercase tracking-wider">
               {mode === "worker-stream"
                 ? "Worker stream"
@@ -373,9 +376,7 @@ export default function HomePage() {
           />
         </section>
 
-        {/* Two independent gauges — never merged */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {/* Directional */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5 flex flex-col">
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
               Directional signal · {timeframe}
@@ -432,7 +433,6 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Anticipation — independent */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5 flex flex-col">
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
               Anticipation · {timeframe}
@@ -461,20 +461,10 @@ export default function HomePage() {
                 </div>
               </div>
 
-              {/* Component breakdown */}
               <div className="w-full max-w-xs mt-4 space-y-2 text-left">
-                <ComponentBar
-                  label="Squeeze"
-                  value={ant?.components?.squeeze}
-                />
-                <ComponentBar
-                  label="Volume accel"
-                  value={ant?.components?.volumeAccel}
-                />
-                <ComponentBar
-                  label="Range extreme"
-                  value={ant?.components?.rangeExtreme}
-                />
+                <ComponentBar label="Squeeze" value={ant?.components?.squeeze} />
+                <ComponentBar label="Volume accel" value={ant?.components?.volumeAccel} />
+                <ComponentBar label="Range extreme" value={ant?.components?.rangeExtreme} />
               </div>
 
               <p className="text-zinc-400 text-sm mt-4 max-w-sm leading-relaxed">
@@ -533,7 +523,7 @@ export default function HomePage() {
         </section>
 
         <footer className="pt-2 pb-6 text-center text-[11px] text-zinc-700">
-          Foundation 00–04 locked · Direction ≠ anticipation · Public data only · No execution
+          Opt-in web push · same gates as UI · Public data only · No execution
         </footer>
       </div>
     </main>
