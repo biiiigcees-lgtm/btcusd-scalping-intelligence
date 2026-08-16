@@ -1,23 +1,15 @@
-import { Redis } from "ioredis";
 import { REDIS_STREAMS } from "@btc/shared";
+import { createRedisClient } from "@/lib/redis";
+import type { Redis } from "ioredis";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-
-/**
- * Snapshot endpoint — reads last worker-published state from Redis only.
- * No direct exchange access.
- */
+/** Snapshot — last worker-published state from Redis only. */
 export async function GET() {
   let redis: Redis | null = null;
   try {
-    redis = new Redis(REDIS_URL, {
-      maxRetriesPerRequest: 1,
-      lazyConnect: true,
-      connectTimeout: 2500,
-    });
+    redis = createRedisClient();
     await redis.connect();
     await redis.ping();
 
@@ -36,6 +28,7 @@ export async function GET() {
           message: "Worker has not published any market_state yet",
           defaultState: "NO TRADE",
           systemHealth: "degraded",
+          redis: "connected",
         },
         { status: 503, headers: { "Cache-Control": "no-store, max-age=0" } }
       );
@@ -70,6 +63,10 @@ export async function GET() {
       { status: 503, headers: { "Cache-Control": "no-store, max-age=0" } }
     );
   } finally {
-    redis?.disconnect();
+    try {
+      redis?.disconnect();
+    } catch {
+      /* ignore */
+    }
   }
 }

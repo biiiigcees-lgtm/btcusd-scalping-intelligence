@@ -1,10 +1,10 @@
-import { Redis } from "ioredis";
 import { REDIS_STREAMS } from "@btc/shared";
+import { createRedisClient } from "@/lib/redis";
+import type { Redis } from "ioredis";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+export const maxDuration = 60;
 
 /**
  * SSE relay — Redis only.
@@ -36,26 +36,31 @@ export async function GET() {
         timestamp: new Date().toISOString(),
       });
 
+      let connectError: string | null = null;
       try {
-        redis = new Redis(REDIS_URL, {
-          maxRetriesPerRequest: 1,
-          lazyConnect: true,
-          connectTimeout: 2500,
-        });
+        if (!process.env.REDIS_URL?.trim()) {
+          throw new Error("REDIS_URL is not set in this environment");
+        }
+        redis = createRedisClient();
         await redis.connect();
         await redis.ping();
-      } catch {
-        redis?.disconnect();
+      } catch (err) {
+        connectError = err instanceof Error ? err.message : String(err);
+        try {
+          redis?.disconnect();
+        } catch {
+          /* ignore */
+        }
         redis = null;
       }
 
       if (!redis) {
-        // Fail loud — no silent direct-exchange fallback (split-brain ban)
         send("status", {
           redis: "unavailable",
           mode: "degraded",
           systemHealth: "degraded",
           note: "Worker/Redis unreachable. Market state unavailable. No direct exchange polling.",
+          error: connectError,
         });
 
         const hb = setInterval(() => {
@@ -68,6 +73,7 @@ export async function GET() {
             mode: "degraded",
             systemHealth: "degraded",
             note: "Still waiting for Redis / worker",
+            error: connectError,
             ts: new Date().toISOString(),
           });
         }, 10_000);
@@ -80,7 +86,6 @@ export async function GET() {
         note: "Reading market_state from Redis worker — single source of truth",
       });
 
-      // Try to seed with the most recent message if stream has history
       try {
         const latest = await redis.xrevrange(
           REDIS_STREAMS.marketState,
@@ -146,7 +151,11 @@ export async function GET() {
     },
     cancel() {
       closed = true;
-      redis?.disconnect();
+      try {
+        redis?.disconnect();
+      } catch {
+        /* ignore */
+      }
     },
   });
 
