@@ -152,9 +152,13 @@ export default function HomePage() {
       try {
         const s = JSON.parse(ev.data);
         if (s.mode) setMode(s.mode);
-        if (s.error || s.message) setError(s.error || s.message);
-        else if (s.note && s.mode === "degraded") setError(s.note);
-        else if (s.mode === "worker-stream") setError(null);
+        if (s.mode === "worker-stream") {
+          setError(null);
+        } else if (s.mode === "degraded") {
+          setError(s.note || s.error || s.message || "Redis unavailable");
+        } else if (s.error || s.message) {
+          setError(s.error || s.message);
+        }
       } catch {
         /* ignore */
       }
@@ -186,6 +190,7 @@ export default function HomePage() {
   const isLong = signalLabel === "LONG";
   const isShort = signalLabel === "SHORT";
   const hasDirection = isLong || isShort;
+  const waitingForWorker = mode === "worker-stream" && state == null;
 
   const priceClass =
     flash === "up"
@@ -227,6 +232,26 @@ export default function HomePage() {
           ? "bg-yellow-600/70"
           : "bg-zinc-600";
 
+  const statusLabel =
+    mode === "worker-stream"
+      ? waitingForWorker
+        ? "Redis OK"
+        : "Live"
+      : mode === "degraded"
+        ? "Degraded"
+        : connected
+          ? "Connected"
+          : "Offline";
+
+  const statusSub =
+    mode === "worker-stream"
+      ? waitingForWorker
+        ? "Waiting for worker"
+        : "Worker stream"
+      : mode === "degraded"
+        ? "Redis unavailable"
+        : mode;
+
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="max-w-6xl mx-auto px-4 py-5 sm:p-6 space-y-5">
@@ -245,7 +270,7 @@ export default function HomePage() {
           <div className="flex flex-col items-end gap-2">
             <div
               className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                connected && mode === "worker-stream"
+                mode === "worker-stream"
                   ? "border-emerald-900/60 bg-emerald-950/40 text-emerald-400"
                   : mode === "degraded"
                     ? "border-amber-900/60 bg-amber-950/40 text-amber-400"
@@ -254,28 +279,18 @@ export default function HomePage() {
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
-                  connected && mode === "worker-stream"
+                  mode === "worker-stream"
                     ? "bg-emerald-400 animate-pulse"
                     : mode === "degraded"
                       ? "bg-amber-400"
                       : "bg-zinc-500"
                 }`}
               />
-              {mode === "worker-stream"
-                ? "Live"
-                : mode === "degraded"
-                  ? "Degraded"
-                  : connected
-                    ? "Connected"
-                    : "Offline"}
+              {statusLabel}
             </div>
             <PushToggle />
             <span className="text-[10px] text-zinc-600 uppercase tracking-wider">
-              {mode === "worker-stream"
-                ? "Worker stream"
-                : mode === "degraded"
-                  ? "Redis unavailable"
-                  : mode}
+              {statusSub}
             </span>
           </div>
         </header>
@@ -283,6 +298,15 @@ export default function HomePage() {
         {error ? (
           <div className="text-amber-400/90 text-xs border border-amber-900/40 bg-amber-950/20 rounded-lg px-3 py-2">
             {error}
+          </div>
+        ) : null}
+
+        {waitingForWorker ? (
+          <div className="text-sky-300/90 text-xs border border-sky-900/40 bg-sky-950/20 rounded-lg px-3 py-2">
+            Redis is connected. Start the <strong>worker</strong> with the same{" "}
+            <code className="text-sky-200">REDIS_URL</code> so it can publish{" "}
+            <code className="text-sky-200">stream:market_state</code>. Price and
+            charts stay empty until the worker runs.
           </div>
         ) : null}
 
@@ -299,11 +323,6 @@ export default function HomePage() {
               </div>
               <div className={`text-sm mt-2 font-medium tabular-nums ${changeClass}`}>
                 {fmtPct(change)} <span className="text-zinc-600 font-normal">24h</span>
-                {prevPrice != null && flash ? (
-                  <span className="text-zinc-600 ml-2 text-xs">
-                    was ${fmtPrice(prevPrice)}
-                  </span>
-                ) : null}
               </div>
             </div>
             <div className="text-right text-[10px] text-zinc-600 space-y-1">
@@ -313,33 +332,6 @@ export default function HomePage() {
                   : "—"}
               </div>
               <div className="uppercase tracking-wider">{timeframe} primary</div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-4 border-t border-zinc-800/80">
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-zinc-600">24h high</div>
-              <div className="tabular-nums text-sm mt-0.5">{fmtPrice(state?.high24h)}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-zinc-600">24h low</div>
-              <div className="tabular-nums text-sm mt-0.5">{fmtPrice(state?.low24h)}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-zinc-600">Volume</div>
-              <div className="tabular-nums text-sm mt-0.5">
-                {state?.volume24h != null
-                  ? state.volume24h.toLocaleString(undefined, { maximumFractionDigits: 0 })
-                  : "—"}
-              </div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-zinc-600">Quote vol</div>
-              <div className="tabular-nums text-sm mt-0.5">
-                {state?.quoteVolume24h != null
-                  ? `$${(state.quoteVolume24h / 1e9).toFixed(2)}B`
-                  : "—"}
-              </div>
             </div>
           </div>
         </section>
@@ -389,7 +381,6 @@ export default function HomePage() {
                 <span className={`h-2 w-2 rounded-full ${signalDotClass}`} />
                 {signalLabel}
               </div>
-
               <div className="w-full max-w-xs mt-4">
                 <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
                   <span>Wilson confidence</span>
@@ -411,25 +402,11 @@ export default function HomePage() {
                     }}
                   />
                 </div>
-                <div className="text-[10px] text-zinc-600 mt-1 text-left">
-                  Gate ≥ 68% · quality ≥ 85% · cooldown 30m
-                </div>
               </div>
-
               <p className="text-zinc-400 text-sm mt-4 max-w-sm leading-relaxed">
                 {state?.signal?.explanation?.what ??
                   "Signals must earn the right to appear. Default = NO TRADE."}
               </p>
-              {state?.signal?.explanation?.why?.slice(0, 4).map((line) => (
-                <p key={line} className="text-xs text-zinc-500 mt-1 text-left w-full">
-                  · {line}
-                </p>
-              ))}
-              {state?.signal?.explanation?.contradictory?.slice(0, 3).map((line) => (
-                <p key={line} className="text-xs text-amber-600/80 mt-1 text-left w-full">
-                  ! {line}
-                </p>
-              ))}
             </div>
           </div>
 
@@ -437,15 +414,12 @@ export default function HomePage() {
             <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
               Anticipation · {timeframe}
             </h2>
-            <p className="text-[10px] text-zinc-600 mb-3">
-              Something big coming? — not direction
-            </p>
+            <p className="text-[10px] text-zinc-600 mb-3">Something big coming? — not direction</p>
             <div className="flex-1 flex flex-col items-center justify-center text-center py-2">
               <div className="inline-flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-950 px-4 py-1.5 text-sm font-medium text-zinc-200 capitalize">
                 <span className={`h-2 w-2 rounded-full ${antColor}`} />
                 {antLabel}
               </div>
-
               <div className="w-full max-w-xs mt-4">
                 <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
                   <span>Expansion setup</span>
@@ -460,91 +434,15 @@ export default function HomePage() {
                   />
                 </div>
               </div>
-
-              <div className="w-full max-w-xs mt-4 space-y-2 text-left">
-                <ComponentBar label="Squeeze" value={ant?.components?.squeeze} />
-                <ComponentBar label="Volume accel" value={ant?.components?.volumeAccel} />
-                <ComponentBar label="Range extreme" value={ant?.components?.rangeExtreme} />
-              </div>
-
-              <p className="text-zinc-400 text-sm mt-4 max-w-sm leading-relaxed">
-                {ant?.explanation?.what ??
-                  "Waiting for primary-TF history to score anticipation."}
-              </p>
-              {ant?.explanation?.supporting?.slice(0, 2).map((line) => (
-                <p key={line} className="text-xs text-amber-500/80 mt-1 text-left w-full">
-                  + {line}
-                </p>
-              ))}
             </div>
           </div>
         </section>
 
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
-          <h2 className="text-xs uppercase tracking-wider text-zinc-500 mb-3">
-            Bot analysis · {timeframe}
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
-            <FeatureRow
-              label={`1-bar return (${timeframe})`}
-              value={features?.return_1 != null ? fmtPct(features.return_1 * 100) : "—"}
-            />
-            <FeatureRow
-              label={`Realized vol (${timeframe})`}
-              value={
-                features?.realized_vol != null
-                  ? `${(features.realized_vol * 100).toFixed(3)}%`
-                  : "—"
-              }
-            />
-            <FeatureRow
-              label={`5-bar momentum (${timeframe})`}
-              value={
-                features?.momentum_5 != null ? fmtPct(features.momentum_5 * 100) : "—"
-              }
-            />
-            <FeatureRow
-              label="Volume intensity"
-              value={
-                features?.volume_intensity != null
-                  ? `${features.volume_intensity.toFixed(2)}×`
-                  : "—"
-              }
-            />
-            <FeatureRow
-              label="Range position"
-              value={
-                features?.range_position != null
-                  ? `${(features.range_position * 100).toFixed(0)}% of local range`
-                  : "—"
-              }
-            />
-          </div>
-        </section>
-
         <footer className="pt-2 pb-6 text-center text-[11px] text-zinc-700">
-          Opt-in web push · same gates as UI · Public data only · No execution
+          Redis OK · worker publishes market_state · no execution
         </footer>
       </div>
     </main>
-  );
-}
-
-function ComponentBar({ label, value }: { label: string; value?: number }) {
-  const v = value ?? 0;
-  return (
-    <div>
-      <div className="flex justify-between text-[10px] text-zinc-500 mb-0.5">
-        <span>{label}</span>
-        <span className="tabular-nums">{(v * 100).toFixed(0)}%</span>
-      </div>
-      <div className="h-1 rounded-full bg-zinc-800 overflow-hidden">
-        <div
-          className="h-full rounded-full bg-zinc-500"
-          style={{ width: `${Math.min(100, Math.max(0, v * 100))}%` }}
-        />
-      </div>
-    </div>
   );
 }
 
@@ -564,15 +462,6 @@ function MetricCard({
       </div>
       <div className="text-base sm:text-lg font-medium mt-1 capitalize truncate">{value}</div>
       {sub ? <div className="text-[10px] text-zinc-600 mt-1 truncate">{sub}</div> : null}
-    </div>
-  );
-}
-
-function FeatureRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 text-sm border-b border-zinc-800/60 pb-2">
-      <span className="text-zinc-500 text-xs">{label}</span>
-      <span className="tabular-nums text-zinc-200 font-medium">{value}</span>
     </div>
   );
 }
