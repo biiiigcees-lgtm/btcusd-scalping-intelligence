@@ -55,17 +55,24 @@ export class DataQualityTracker {
   }
 
   getSnapshot(): QualitySnapshot {
+    const silenceMs =
+      this.lastTradeReceivedAt === 0
+        ? Number.POSITIVE_INFINITY
+        : Date.now() - this.lastTradeReceivedAt;
     return {
       score: this.score,
       latencyMs: this.lastTradeLatencyMs,
-      silenceMs:
-        this.lastTradeReceivedAt === 0
-          ? Number.POSITIVE_INFINITY
-          : Date.now() - this.lastTradeReceivedAt,
+      silenceMs,
       reconnectsRecent: this.recentReconnects.length,
       sourceSwitchesRecent: this.recentSourceSwitches.length,
       activeSource: this.activeSource,
-      reasons: this.buildReasons(),
+      reasons: this.buildReasons({
+        latencyMs: this.lastTradeLatencyMs,
+        silenceMs,
+        reconnectsRecent: this.recentReconnects.length,
+        sourceSwitchesRecent: this.recentSourceSwitches.length,
+        activeSource: this.activeSource,
+      }),
       lastHealthyAt: this.lastHealthyAt,
     };
   }
@@ -95,7 +102,6 @@ export class DataQualityTracker {
     if (this.recentReconnects.length >= 5) score -= 0.3;
     else if (this.recentReconnects.length >= 2) score -= 0.1;
 
-    // Flapping between sources is itself a quality defect
     if (this.recentSourceSwitches.length >= 4) score -= 0.25;
     else if (this.recentSourceSwitches.length >= 2) score -= 0.1;
 
@@ -105,8 +111,13 @@ export class DataQualityTracker {
     }
   }
 
-  private buildReasons(): string[] {
-    const snap = this.getSnapshot();
+  private buildReasons(snap: {
+    latencyMs: number;
+    silenceMs: number;
+    reconnectsRecent: number;
+    sourceSwitchesRecent: number;
+    activeSource: string;
+  }): string[] {
     const reasons: string[] = [];
     if (snap.latencyMs > 500) reasons.push(`latency:${snap.latencyMs}ms`);
     if (snap.silenceMs > 10_000)
