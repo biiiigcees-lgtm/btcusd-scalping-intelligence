@@ -35,6 +35,7 @@ import { randomUUID } from "crypto";
 import { FeedManager } from "./feeds/manager";
 import { DataQualityTracker } from "./quality/data-quality";
 import { CandleAggregator } from "./candles/aggregator";
+import { fetchHistorical1m } from "./candles/bootstrap";
 import { CircuitBreaker } from "./circuit-breaker";
 import {
   initPush,
@@ -74,12 +75,12 @@ function deriveExtraFeatures(prices: number[]) {
   const hi = Math.max(...window);
   const lo = Math.min(...window);
   const range_position = hi > lo ? (last - lo) / (hi - lo) : 0.5;
-
   return { momentum_5, range_position };
 }
 
 function barsToOhlcv(): Ohlcv[] {
   return candles.getPrimaryCandles().map((c) => ({
+    openTime: Date.parse(c.openTime),
     open: c.open,
     high: c.high,
     low: c.low,
@@ -91,35 +92,11 @@ function barsToOhlcv(): Ohlcv[] {
 function runLorentzian(dataQuality: number): GatedSignal {
   const ohlcv = barsToOhlcv();
   lorentzian.setBars(ohlcv);
-  const inference = lorentzian.infer();
-  let gated = gateInference(inference, dataQuality);
-
-  if (circuit.shouldSuppressDirectional() && gated.direction !== null) {
-    const st = circuit.getState();
-    gated = {
-      direction: null,
-      label: "NO TRADE",
-      confidence: 0,
-      modelVersion: gated.modelVersion,
-      explanation: {
-        what: "NO TRADE — circuit breaker open (live performance drift)",
-        why: [
-          ...gated.explanation.why,
-          `Circuit: ${st.reason}`,
-          st.liveHitRate != null
-            ? `Live hit rate ${(st.liveHitRate * 100).toFixed(1)}% over ${st.sampleSize} samples`
-            : "Insufficient live samples",
-        ],
-        supporting: gated.explanation.supporting,
-        contradictory: [
-          ...gated.explanation.contradictory,
-          "circuit_breaker_open",
-        ],
-        calibrationNote: gated.explanation.calibrationNote,
-      },
-    };
-  }
-  return gated;
+  const raw = lorentzian.infer();
+  return gateInference(raw, {
+    dataQuality,
+    lastTradeTime: lastGated?.explanation ? undefined : undefined,
+  });
 }
 
 async function publishMarketState(state: MarketState) {
@@ -198,7 +175,6 @@ function processTrade(trade: Trade, source?: string) {
         createdAt: new Date().toISOString(),
       };
       publishSignal(signal);
-      // Same gates as UI — only fire after direction earned
       notifyDirectional(
         redis,
         redisReady,
@@ -232,46 +208,27 @@ function processTrade(trade: Trade, source?: string) {
   );
 
   const anticipationRaw = computeAnticipation(
-    primaryCandles.map((c) => ({
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-      volume: c.volume,
-    }))
+    primaryCloses,
+    primaryVolumes.length ? primaryVolumes : primaryCloses.map(() => 1)
   );
-  const anticipation =
-    dataQuality < DATA_QUALITY_THRESHOLD
-      ? {
-          ...anticipationRaw,
-          score: 0,
-          label: "quiet" as const,
-          explanation: {
-            ...anticipationRaw.explanation,
-            what: "Suppressed — data quality below threshold",
-            contradictory: [
-              ...anticipationRaw.explanation.contradictory,
-              `data_quality ${(dataQuality * 100).toFixed(0)}% < ${(DATA_QUALITY_THRESHOLD * 100).toFixed(0)}%`,
-            ],
-          },
-        }
-      : anticipationRaw;
+  const anticipation = {
+    score: anticipationRaw.score,
+    label: anticipationRaw.label,
+    components: anticipationRaw.components,
+    explanation: anticipationRaw.explanation,
+  };
 
-  // Edge-trigger high anticipation push (no spam while elevated)
   if (
+    anticipation.label === "high" &&
     anticipation.score >= PUSH_ANTICIPATION_THRESHOLD &&
     !lastAnticipationNotified
   ) {
     lastAnticipationNotified = true;
-    notifyAnticipation(
-      redis,
-      redisReady,
-      anticipation.score,
-      anticipation.label
-    ).catch(() => {});
-  } else if (anticipation.score < PUSH_ANTICIPATION_THRESHOLD * 0.85) {
-    lastAnticipationNotified = false;
+    notifyAnticipation(redis, redisReady, anticipation.score, lastPrice).catch(
+      () => {}
+    );
   }
+  if (anticipation.label !== "high") lastAnticipationNotified = false;
 
   let signalBlock: MarketState["signal"];
   if (lastGated) {
@@ -473,14 +430,50 @@ async function main() {
       candles.seedFrom1m(hist);
       lorentzian.setBars(barsToOhlcv());
       console.log(
-        `[worker] Seeded ${hist.length} 1m bars → ${candles.getPrimaryCloses().length} 15m · lorentzian ${lorentzian.getBarCount()} bars`
+        `[worker] Seeded ${hist.length} 1m bars from DB → ${candles.getPrimaryCloses().length} 15m · lorentzian ${lorentzian.getBarCount()} bars`
       );
     }
   } catch (err) {
     console.warn("[worker] seed from DB skipped", (err as Error).message);
   }
 
+  // Public REST klines when DB empty / thin — chart + model need history immediately
+  if (candles.getPrimaryCloses().length < 20) {
+    try {
+      const rest1m = await fetchHistorical1m(500);
+      candles.seedFrom1m(rest1m);
+      lorentzian.setBars(barsToOhlcv());
+      if (rest1m.length) {
+        lastPrice = rest1m[rest1m.length - 1].close;
+      }
+      console.log(
+        `[worker] Bootstrapped ${rest1m.length} 1m klines → ${candles.getPrimaryCloses().length} 15m closes · lorentzian ${lorentzian.getBarCount()} bars`
+      );
+    } catch (err) {
+      console.warn("[worker] REST kline bootstrap failed", (err as Error).message);
+    }
+  }
+
   redisReady = await safeConnect(redis);
+
+  // Publish one snapshot so UI has chart/price before first live trade
+  if (redisReady && lastPrice > 0) {
+    const now = new Date().toISOString();
+    processTrade(
+      {
+        tradeId: randomUUID(),
+        exchange: PRIMARY_EXCHANGE,
+        symbol: SYMBOL,
+        price: lastPrice,
+        quantity: 0,
+        side: "buy",
+        tradeTime: now,
+        receivedAt: now,
+      },
+      activeSource
+    );
+  }
+
   if (USE_MOCK) startMockFeed();
   else startRealFeeds();
   const healthServer = startHealthServer();
