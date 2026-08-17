@@ -45,7 +45,8 @@ import {
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 const USE_MOCK = process.env.USE_MOCK_FEED === "true";
-const HEALTH_PORT = Number(process.env.HEALTH_PORT || 8081);
+// Railway injects PORT; local default 8081
+const HEALTH_PORT = Number(process.env.PORT || process.env.HEALTH_PORT || 8081);
 
 const redis = createRedis(REDIS_URL);
 let redisReady = false;
@@ -59,7 +60,6 @@ let feedConnected = false;
 let activeSource = USE_MOCK ? "mock" : "binance-global";
 let lastGated: GatedSignal | null = null;
 let feedManager: FeedManager | null = null;
-/** Dedupe anticipation pushes — only when crossing into high */
 let lastAnticipationNotified = false;
 
 function deriveExtraFeatures(prices: number[]) {
@@ -70,7 +70,6 @@ function deriveExtraFeatures(prices: number[]) {
   const lookback = Math.min(5, prices.length - 1);
   const base = prices[prices.length - 1 - lookback];
   const momentum_5 = base !== 0 ? (last - base) / base : 0;
-
   const window = prices.slice(-30);
   const hi = Math.max(...window);
   const lo = Math.min(...window);
@@ -95,7 +94,7 @@ function runLorentzian(dataQuality: number): GatedSignal {
   const raw = lorentzian.infer();
   return gateInference(raw, {
     dataQuality,
-    lastTradeTime: lastGated?.explanation ? undefined : undefined,
+    lastTradeTime: undefined,
   });
 }
 
@@ -407,7 +406,7 @@ function startHealthServer() {
     res.writeHead(404);
     res.end();
   });
-  server.listen(HEALTH_PORT, () => {
+  server.listen(HEALTH_PORT, "0.0.0.0", () => {
     console.log(`[worker] Health endpoint http://0.0.0.0:${HEALTH_PORT}/health`);
   });
   return server;
@@ -437,7 +436,6 @@ async function main() {
     console.warn("[worker] seed from DB skipped", (err as Error).message);
   }
 
-  // Public REST klines when DB empty / thin — chart + model need history immediately
   if (candles.getPrimaryCloses().length < 20) {
     try {
       const rest1m = await fetchHistorical1m(500);
@@ -456,7 +454,6 @@ async function main() {
 
   redisReady = await safeConnect(redis);
 
-  // Publish one snapshot so UI has chart/price before first live trade
   if (redisReady && lastPrice > 0) {
     const now = new Date().toISOString();
     processTrade(
