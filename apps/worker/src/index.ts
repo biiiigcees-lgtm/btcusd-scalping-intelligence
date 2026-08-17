@@ -92,10 +92,7 @@ function runLorentzian(dataQuality: number): GatedSignal {
   const ohlcv = barsToOhlcv();
   lorentzian.setBars(ohlcv);
   const raw = lorentzian.infer();
-  return gateInference(raw, {
-    dataQuality,
-    lastTradeTime: undefined,
-  });
+  return gateInference(raw, dataQuality);
 }
 
 async function publishMarketState(state: MarketState) {
@@ -206,10 +203,7 @@ function processTrade(trade: Trade, source?: string) {
     trade.tradeTime
   );
 
-  const anticipationRaw = computeAnticipation(
-    primaryCloses,
-    primaryVolumes.length ? primaryVolumes : primaryCloses.map(() => 1)
-  );
+  const anticipationRaw = computeAnticipation(primaryCandles);
   const anticipation = {
     score: anticipationRaw.score,
     label: anticipationRaw.label,
@@ -223,7 +217,7 @@ function processTrade(trade: Trade, source?: string) {
     !lastAnticipationNotified
   ) {
     lastAnticipationNotified = true;
-    notifyAnticipation(redis, redisReady, anticipation.score, lastPrice).catch(
+    notifyAnticipation(redis, redisReady, anticipation.score, anticipation.label).catch(
       () => {}
     );
   }

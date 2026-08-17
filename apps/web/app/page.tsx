@@ -142,7 +142,6 @@ export default function HomePage() {
         });
         setError(null);
         setConnected(true);
-        setMode("worker-stream");
       } catch {
         /* ignore */
       }
@@ -152,7 +151,7 @@ export default function HomePage() {
       try {
         const s = JSON.parse(ev.data);
         if (s.mode) setMode(s.mode);
-        if (s.mode === "worker-stream") {
+        if (s.mode === "vercel-cron" || s.mode === "worker-stream") {
           setError(null);
         } else if (s.mode === "degraded") {
           setError(s.note || s.error || s.message || "Redis unavailable");
@@ -177,6 +176,7 @@ export default function HomePage() {
   const regime = state?.regime?.regime ?? "unknown";
   const quality = state?.dataQuality;
   const qSnap = state?.qualitySnapshot;
+
   const health = state?.systemHealth ?? "unknown";
   const signalLabel = state?.signal?.label ?? "NO TRADE";
   const signalConf = state?.signal?.confidence ?? 0;
@@ -190,7 +190,12 @@ export default function HomePage() {
   const isLong = signalLabel === "LONG";
   const isShort = signalLabel === "SHORT";
   const hasDirection = isLong || isShort;
-  const waitingForWorker = mode === "worker-stream" && state == null;
+
+  const stateAgeSec = state?.lastUpdate
+    ? Math.max(0, Math.round((Date.now() - Date.parse(state.lastUpdate)) / 1000))
+    : null;
+  const isStale = stateAgeSec != null && stateAgeSec > 180;
+  const isLive = state != null && !isStale && mode !== "degraded";
 
   const priceClass =
     flash === "up"
@@ -232,25 +237,41 @@ export default function HomePage() {
           ? "bg-yellow-600/70"
           : "bg-zinc-600";
 
-  const statusLabel =
-    mode === "worker-stream"
-      ? waitingForWorker
-        ? "Redis OK"
-        : "Live"
+  const statusLabel = isLive
+    ? "Live"
+    : isStale
+      ? "Stale"
       : mode === "degraded"
         ? "Degraded"
         : connected
-          ? "Connected"
+          ? "Connecting…"
           : "Offline";
 
-  const statusSub =
-    mode === "worker-stream"
-      ? waitingForWorker
-        ? "Waiting for worker"
-        : "Worker stream"
+  const statusSub = isLive
+    ? mode === "vercel-cron"
+      ? "Vercel Cron · Redis"
+      : "Live stream"
+    : isStale
+      ? `Updated ${Math.round(stateAgeSec! / 60)}m ago`
       : mode === "degraded"
         ? "Redis unavailable"
-        : mode;
+        : "Initializing…";
+
+  const statusPillClass = isLive
+    ? "border-emerald-900/60 bg-emerald-950/40 text-emerald-400"
+    : isStale
+      ? "border-amber-900/60 bg-amber-950/40 text-amber-400"
+      : mode === "degraded"
+        ? "border-rose-900/60 bg-rose-950/40 text-rose-400"
+        : "border-zinc-700 bg-zinc-900 text-zinc-400";
+
+  const statusDotClass = isLive
+    ? "bg-emerald-400 animate-pulse"
+    : isStale
+      ? "bg-amber-400"
+      : mode === "degraded"
+        ? "bg-rose-400"
+        : "bg-zinc-500";
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -269,23 +290,9 @@ export default function HomePage() {
           </div>
           <div className="flex flex-col items-end gap-2">
             <div
-              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                mode === "worker-stream"
-                  ? "border-emerald-900/60 bg-emerald-950/40 text-emerald-400"
-                  : mode === "degraded"
-                    ? "border-amber-900/60 bg-amber-950/40 text-amber-400"
-                    : "border-zinc-700 bg-zinc-900 text-zinc-400"
-              }`}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${statusPillClass}`}
             >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  mode === "worker-stream"
-                    ? "bg-emerald-400 animate-pulse"
-                    : mode === "degraded"
-                      ? "bg-amber-400"
-                      : "bg-zinc-500"
-                }`}
-              />
+              <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
               {statusLabel}
             </div>
             <PushToggle />
@@ -298,15 +305,6 @@ export default function HomePage() {
         {error ? (
           <div className="text-amber-400/90 text-xs border border-amber-900/40 bg-amber-950/20 rounded-lg px-3 py-2">
             {error}
-          </div>
-        ) : null}
-
-        {waitingForWorker ? (
-          <div className="text-sky-300/90 text-xs border border-sky-900/40 bg-sky-950/20 rounded-lg px-3 py-2">
-            Redis is connected. Start the <strong>worker</strong> with the same{" "}
-            <code className="text-sky-200">REDIS_URL</code> so it can publish{" "}
-            <code className="text-sky-200">stream:market_state</code>. Price and
-            charts stay empty until the worker runs.
           </div>
         ) : null}
 

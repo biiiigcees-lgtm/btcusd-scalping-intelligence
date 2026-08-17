@@ -11,6 +11,10 @@
     "test": "echo 'web tests pending' && exit 0"
   },
   "dependencies": {
+    "@btc/features": "workspace:*",
+    "@btc/ml": "workspace:*",
+    "@btc/ml-lorentzian": "workspace:*",
+    "@btc/regime": "workspace:*",
     "@btc/shared": "workspace:*",
     "ioredis": "^5.4.1",
     "lightweight-charts": "^4.2.1",

@@ -21,6 +21,18 @@ importers:
 
   apps/web:
     dependencies:
+      '@btc/features':
+        specifier: workspace:*
+        version: link:../../packages/features
+      '@btc/ml':
+        specifier: workspace:*
+        version: link:../../packages/ml
+      '@btc/ml-lorentzian':
+        specifier: workspace:*
+        version: link:../../packages/ml-lorentzian
+      '@btc/regime':
+        specifier: workspace:*
+        version: link:../../packages/regime
       '@btc/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -1,20 +1,18 @@
-import { REDIS_STREAMS } from "@btc/shared";
-import { createRedisClient } from "@/lib/redis";
-import type { Redis } from "ioredis";
+import { getOrRefreshMarketState } from "@/lib/server/tick";
+import { pingRedis } from "@/lib/redis";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 /**
- * SSE relay — Redis only.
- * Worker is the single source of truth. No per-client exchange polling.
- * If Redis is unreachable we fail loud with a degraded status event.
+ * SSE relay — Serverless stream.
+ * Reads latest market state from Redis (or on-demand tick),
+ * pushes real-time updates and status events to connected clients.
  */
 export async function GET() {
   const encoder = new TextEncoder();
   let closed = false;
-  let redis: Redis | null = null;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -36,126 +34,74 @@ export async function GET() {
         timestamp: new Date().toISOString(),
       });
 
-      let connectError: string | null = null;
-      try {
-        if (!process.env.REDIS_URL?.trim()) {
-          throw new Error("REDIS_URL is not set in this environment");
-        }
-        redis = createRedisClient();
-        await redis.connect();
-        await redis.ping();
-      } catch (err) {
-        connectError = err instanceof Error ? err.message : String(err);
-        try {
-          redis?.disconnect();
-        } catch {
-          /* ignore */
-        }
-        redis = null;
-      }
+      let lastEmittedState = "";
+      let redisHealthy = true;
 
-      if (!redis) {
+      const redisCheck = await pingRedis();
+      redisHealthy = redisCheck.ok;
+
+      // Initial state fetch
+      try {
+        const { state } = await getOrRefreshMarketState(60_000);
+        lastEmittedState = state.lastUpdate;
+        const ageSec = Math.max(
+          0,
+          Math.round((Date.now() - Date.parse(state.lastUpdate)) / 1000)
+        );
+
         send("status", {
-          redis: "unavailable",
-          mode: "degraded",
-          systemHealth: "degraded",
-          note: "Worker/Redis unreachable. Market state unavailable. No direct exchange polling.",
-          error: connectError,
+          redis: redisHealthy ? "connected" : "unavailable",
+          mode: "vercel-cron",
+          ageSec,
+          note: "Market state cached in Redis via Vercel Cron & on-demand tick",
         });
 
-        const hb = setInterval(() => {
-          if (closed) {
-            clearInterval(hb);
-            return;
-          }
-          send("status", {
-            redis: "unavailable",
-            mode: "degraded",
-            systemHealth: "degraded",
-            note: "Still waiting for Redis / worker",
-            error: connectError,
-            ts: new Date().toISOString(),
-          });
-        }, 10_000);
-        return;
+        send("market_state", state);
+      } catch (err) {
+        send("status", {
+          redis: redisHealthy ? "connected" : "unavailable",
+          mode: "degraded",
+          error: (err as Error).message,
+        });
       }
 
-      send("status", {
-        redis: "connected",
-        mode: "worker-stream",
-        note: "Reading market_state from Redis worker — single source of truth",
-      });
-
-      try {
-        const latest = await redis.xrevrange(
-          REDIS_STREAMS.marketState,
-          "+",
-          "-",
-          "COUNT",
-          1
-        );
-        if (latest?.length) {
-          const fields = latest[0][1];
-          const payloadIdx = fields.indexOf("payload");
-          if (payloadIdx >= 0 && fields[payloadIdx + 1]) {
-            try {
-              send("market_state", JSON.parse(fields[payloadIdx + 1]));
-            } catch {
-              /* ignore */
-            }
-          }
+      // Continuous polling loop
+      let tickCount = 0;
+      const interval = setInterval(async () => {
+        if (closed) {
+          clearInterval(interval);
+          return;
         }
-      } catch {
-        /* ignore seed failure */
-      }
 
-      let lastId = "$";
-      const poll = async () => {
-        if (closed || !redis) return;
+        tickCount++;
         try {
-          const results = await redis.xread(
-            "COUNT",
-            10,
-            "BLOCK",
-            2000,
-            "STREAMS",
-            REDIS_STREAMS.marketState,
-            lastId
+          const { state } = await getOrRefreshMarketState(60_000);
+          const ageSec = Math.max(
+            0,
+            Math.round((Date.now() - Date.parse(state.lastUpdate)) / 1000)
           );
-          if (results) {
-            for (const [, messages] of results) {
-              for (const [id, fields] of messages) {
-                lastId = id;
-                const payloadIdx = fields.indexOf("payload");
-                if (payloadIdx >= 0 && fields[payloadIdx + 1]) {
-                  try {
-                    send("market_state", JSON.parse(fields[payloadIdx + 1]));
-                  } catch {
-                    /* ignore */
-                  }
-                }
-              }
-            }
+
+          if (state.lastUpdate !== lastEmittedState) {
+            lastEmittedState = state.lastUpdate;
+            send("market_state", state);
           }
-        } catch (err) {
-          send("status", {
-            redis: "error",
-            mode: "degraded",
-            systemHealth: "degraded",
-            message: (err as Error).message,
-          });
+
+          // Emit status heartbeat every 5 ticks (10s)
+          if (tickCount % 5 === 0) {
+            send("status", {
+              redis: redisHealthy ? "connected" : "unavailable",
+              mode: "vercel-cron",
+              ageSec,
+              ts: new Date().toISOString(),
+            });
+          }
+        } catch {
+          /* ignore loop error */
         }
-        if (!closed) setTimeout(poll, 50);
-      };
-      poll();
+      }, 2000);
     },
     cancel() {
       closed = true;
-      try {
-        redis?.disconnect();
-      } catch {
-        /* ignore */
-      }
     },
   });
 
