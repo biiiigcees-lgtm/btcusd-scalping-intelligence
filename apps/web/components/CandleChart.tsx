@@ -46,7 +46,6 @@ function toChartData(candles: ChartCandle[]): CandlestickData<Time>[] {
       close: c.close,
     });
   }
-  // Ensure ascending unique times
   out.sort((a, b) => (a.time as number) - (b.time as number));
   const dedup: CandlestickData<Time>[] = [];
   for (const bar of out) {
@@ -59,9 +58,9 @@ function toChartData(candles: ChartCandle[]): CandlestickData<Time>[] {
   return dedup;
 }
 
-/** Synthesize minimal OHLC from closes when worker has not yet closed bars */
+/** Synthesize OHLC from closes when worker has not yet closed many bars */
 function closesToCandles(closes: number[]): CandlestickData<Time>[] {
-  if (closes.length < 2) return [];
+  if (closes.length < 1) return [];
   const now = Math.floor(Date.now() / 1000);
   const step = 15 * 60;
   return closes.map((close, i) => {
@@ -77,12 +76,16 @@ function closesToCandles(closes: number[]): CandlestickData<Time>[] {
   });
 }
 
-export function CandleChart({ candles, closes, timeframe = "15m", height = 280 }: Props) {
+export function CandleChart({
+  candles,
+  closes,
+  timeframe = "15m",
+  height = 280,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
 
-  // Create chart once
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -90,12 +93,13 @@ export function CandleChart({ candles, closes, timeframe = "15m", height = 280 }
       height,
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "#71717a", // zinc-500
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        textColor: "#71717a",
+        fontFamily:
+          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: "rgba(39, 39, 42, 0.6)" }, // zinc-800
+        vertLines: { color: "rgba(39, 39, 42, 0.6)" },
         horzLines: { color: "rgba(39, 39, 42, 0.6)" },
       },
       crosshair: {
@@ -122,8 +126,8 @@ export function CandleChart({ candles, closes, timeframe = "15m", height = 280 }
     });
 
     const series = chart.addCandlestickSeries({
-      upColor: "#34d399", // emerald-400
-      downColor: "#f87171", // rose-400
+      upColor: "#34d399",
+      downColor: "#f87171",
       borderUpColor: "#34d399",
       borderDownColor: "#f87171",
       wickUpColor: "#34d399",
@@ -151,21 +155,48 @@ export function CandleChart({ candles, closes, timeframe = "15m", height = 280 }
     };
   }, [height]);
 
-  // Push data when candles/closes change
   useEffect(() => {
     if (!seriesRef.current || !chartRef.current) return;
 
     let data: CandlestickData<Time>[] = [];
-    if (candles && candles.length >= 2) {
+    if (candles && candles.length >= 1) {
       data = toChartData(candles);
-    } else if (closes && closes.length >= 2) {
+      // lightweight-charts needs ≥2 points for a sensible scale — pad if needed
+      if (data.length === 1) {
+        const only = data[0];
+        const t0 = (only.time as number) - 15 * 60;
+        data = [
+          {
+            time: t0 as Time,
+            open: only.open,
+            high: only.high,
+            low: only.low,
+            close: only.open,
+          },
+          only,
+        ];
+      }
+    } else if (closes && closes.length >= 1) {
       data = closesToCandles(closes);
+      if (data.length === 1) {
+        const only = data[0];
+        data = [
+          {
+            time: ((only.time as number) - 15 * 60) as Time,
+            open: only.open,
+            high: only.high,
+            low: only.low,
+            close: only.open,
+          },
+          only,
+        ];
+      }
     }
 
-    if (data.length < 2) return;
+    if (data.length < 1) return;
 
     seriesRef.current.setData(data);
-    chartRef.current.timeScale().scrollToRealTime();
+    chartRef.current.timeScale().fitContent();
   }, [candles, closes]);
 
   const barCount = candles?.length ?? closes?.length ?? 0;
@@ -187,7 +218,8 @@ export function CandleChart({ candles, closes, timeframe = "15m", height = 280 }
       />
       {barCount < 2 ? (
         <p className="text-[11px] text-zinc-600 mt-2">
-          Collecting {timeframe} bars from worker… features and regime already evaluate on this TF.
+          Collecting {timeframe} bars from worker… restart worker to bootstrap
+          history from public klines.
         </p>
       ) : null}
     </div>
