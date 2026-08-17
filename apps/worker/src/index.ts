@@ -3,7 +3,7 @@
  * Single source of truth for market_state published to Redis.
  * Primary TF = 15m. Hot-standby. Lorentzian + anticipation. Circuit breaker. Web push.
  */
-import { createRedis, safeConnect } from "./redis";
+import { createRedis, safeConnect, redactRedisUrl } from "./redis";
 import {
   initPersistence,
   persistTrade,
@@ -458,7 +458,7 @@ function startHealthServer() {
 
 async function main() {
   console.log("[worker] BTC Scalping Intelligence Worker starting...");
-  console.log(`[worker] Redis: ${REDIS_URL}`);
+  console.log(`[worker] Redis: ${redactRedisUrl(REDIS_URL)}`);
   console.log(`[worker] USE_MOCK_FEED=${USE_MOCK}`);
   console.log(`[worker] Primary timeframe: ${PRIMARY_TIMEFRAME}`);
   console.log(

@@ -121,6 +121,19 @@ export class BinanceTradeFeed {
       this.startHeartbeat();
     });
 
+    this.ws.on("ping", (data: Buffer) => {
+      this.lastMessageAt = Date.now();
+      try {
+        this.ws?.pong(data);
+      } catch {
+        /* ignore */
+      }
+    });
+
+    this.ws.on("pong", () => {
+      this.lastMessageAt = Date.now();
+    });
+
     this.ws.on("message", (data: WebSocket.RawData) => {
       this.lastMessageAt = Date.now();
       try {
@@ -213,11 +226,18 @@ export class BinanceTradeFeed {
   private startHeartbeat() {
     this.clearHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      if (this.getSilenceMs() > 15_000) {
-        console.warn(`[${this.sourceLabel}] Silence >15s — forcing reconnect`);
+      if (this.ws && this.connected) {
+        try {
+          this.ws.ping();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (this.getSilenceMs() > 45_000) {
+        console.warn(`[${this.sourceLabel}] Silence >45s — forcing reconnect`);
         this.ws?.terminate();
       }
-    }, 5_000);
+    }, 10_000);
   }
 
   private clearHeartbeat() {
