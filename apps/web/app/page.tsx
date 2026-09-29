@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { PushToggle } from "@/components/PushToggle";
+import Link from "next/link";
 
 const CandleChart = dynamic(
   () => import("@/components/CandleChart").then((m) => m.CandleChart),
@@ -274,7 +275,11 @@ export default function HomePage() {
         : "bg-zinc-500";
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
+    <>
+      <div className="px-4 py-2 border-b border-zinc-800/80 flex justify-end">
+        <Link href="/kalshi" className="text-[11px] tracking-wide text-emerald-400 hover:text-emerald-300 uppercase">Kalshi 15M Terminal →</Link>
+      </div>
+      <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="max-w-6xl mx-auto px-4 py-5 sm:p-6 space-y-5">
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 pb-4">
           <div className="min-w-0">
@@ -441,6 +446,7 @@ export default function HomePage() {
         </footer>
       </div>
     </main>
+    </>
   );
 }
 
