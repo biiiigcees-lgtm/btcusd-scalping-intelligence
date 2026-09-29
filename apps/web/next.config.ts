@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import path from "path";
 
 const nextConfig: NextConfig = {
-  transpilePackages: ["@btc/shared"],
+  transpilePackages: ["@btc/shared", "@btc/kalshi"],
   // Monorepo: include workspace packages in file tracing
   outputFileTracingRoot: path.join(__dirname, "../../"),
 };

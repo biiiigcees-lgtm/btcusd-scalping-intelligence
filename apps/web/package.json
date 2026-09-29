@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@btc/features": "workspace:*",
+    "@btc/kalshi": "workspace:*",
     "@btc/ml": "workspace:*",
     "@btc/ml-lorentzian": "workspace:*",
     "@btc/regime": "workspace:*",

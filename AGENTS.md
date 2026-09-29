@@ -20,6 +20,7 @@ You are Principal Engineer on this repo. Non-executing quantitative research & d
 - Primary TF 15m · lightweight-charts · Lorentzian KNN · anticipation
 - Feeds: Binance global + Binance.US hot standby
 - Circuit breaker + promotion gate
+- Kalshi module (`@btc/kalshi`, `/api/v1/kalshi/*`): PUBLIC_PROXY only; no YES/NO without CFB_DIRECT; see `docs/kalshi-terminal.md`
 
 ## Web push setup
 

@@ -37,10 +37,22 @@ Set `DASHBOARD_SECRET` in production; then open `/?key=<secret>` once to set the
 |-----------|------|
 | `apps/worker` | **Single source of truth** — Binance public WS / mock, features, regime, quality, baseline ML → Redis `stream:market_state` |
 | `apps/web` | Next.js 15 UI + SSE **relay only** (no exchange polling, no recompute) |
-| `packages/*` | shared, features, regime, ml, db, config |
-| `docs/` | Foundation 00–04 (locked) |
+| `packages/*` | shared, features, regime, ml, kalshi, db, config |
+| `docs/` | Foundation 00–04 (locked) + Kalshi terminal |
 
 If Redis/worker is down the UI shows **degraded** and does not fall back to direct exchange calls.
+
+## Kalshi terminal (PUBLIC_PROXY)
+
+Additive module for Kalshi `KXBTC15M` binary contracts using **public** Kalshi REST + Coinbase spot (no API key). Non-executing; never emits actionable YES/NO without CFB.
+
+```bash
+# after pnpm install + web dev
+curl -s http://localhost:3000/api/v1/kalshi/health
+curl -s http://localhost:3000/api/v1/kalshi/snapshot
+```
+
+See `docs/kalshi-terminal.md`.
 
 ## Constraints
 
@@ -48,6 +60,7 @@ If Redis/worker is down the UI shows **degraded** and does not fall back to dire
 - Data quality < 0.85 → NO TRADE
 - Baseline model emits no direction until research promotion
 - Public market data only
-- Worker is the only process that talks to exchanges
+- Worker is the only process that talks to **exchange** feeds (Binance)
+- Kalshi PUBLIC_PROXY is on-demand serverless public REST (no private keys)
 
 See `AGENTS.md` for agent/engineering workflow and remaining Phase 05+ priority order.
